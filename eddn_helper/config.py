@@ -32,6 +32,22 @@ def sqlite_path(url):
     return Path(u.database)
 
 
+def lock_path(url):
+    """
+    Lock file guarding 'one listener per database'. SQLite: next to the database file. Other backends: one file
+    per server/port/database in the data dir, so a PostgreSQL listener is not blocked by an unrelated SQLite one.
+    """
+    import re
+
+    from sqlalchemy.engine import make_url
+    p = sqlite_path(url)
+    if p:
+        return p.parent / "listener.lock"
+    u = make_url(url)
+    ident = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{u.get_backend_name()}-{u.host or 'local'}-{u.port or ''}-{u.database or ''}")
+    return data_dir() / f"listener-{ident}.lock"
+
+
 def runtime_dir(url):
     """Directory for the lock file and log: next to the SQLite file, else the default data dir."""
     p = sqlite_path(url)

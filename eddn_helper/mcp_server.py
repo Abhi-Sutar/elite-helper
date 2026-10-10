@@ -66,9 +66,20 @@ def station_market(station: str, system: str | None = None, live_lookup: bool = 
 
 
 @mcp.tool()
-def price_history(station: str, commodity: str, system: str | None = None, days: int = 30) -> dict:
-    """Time series (price, stock, demand) of one commodity at a station, with min/avg/max. Kept ~30 days."""
-    return _run(queries.price_history, station, commodity, system, days)
+def price_history(station: str, commodity: str, system: str | None = None, days: int = 30,
+                  bucket_minutes: int | None = None, max_points: int = 500) -> dict:
+    """
+    Time series (price, stock, demand) of one commodity at a station, with min/avg/max and an update count.
+    Kept 30 days. Long series are auto-summarised into time buckets (min/avg/max per bucket) once they exceed
+    max_points; pass bucket_minutes to choose the bucket size yourself.
+    """
+    return _run(queries.price_history, station, commodity, system, days, bucket_minutes, max_points)
+
+
+@mcp.tool()
+def station_activity(station: str, system: str | None = None, days: int = 30) -> dict:
+    """How many market updates are stored for a station (total, first/last, per day) - e.g. a fleet carrier by callsign."""
+    return _run(queries.station_activity, station, system, days)
 
 
 @mcp.tool()

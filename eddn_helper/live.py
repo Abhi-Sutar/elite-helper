@@ -1,6 +1,10 @@
 """Query wrappers that fall back to EDSM when local EDDN data is missing or stale."""
 
+from sqlalchemy.exc import DBAPIError
+
 from . import external, queries
+
+READ_ONLY_MSG = "database connection is read-only (or write failed); live lookup cannot store results"
 
 
 def system_info(session, name, live=False, max_age_hours=48):
@@ -14,6 +18,9 @@ def system_info(session, name, live=False, max_age_hours=48):
                 res = queries.system_info(session, name)
         except external.LiveLookupError as e:
             res["live_error"] = str(e)
+        except DBAPIError:
+            session.rollback()
+            res["live_error"] = READ_ONLY_MSG
     return res
 
 
@@ -26,6 +33,9 @@ def station_market(session, station, system=None, live=False, max_age_hours=48):
                 res = queries.station_market(session, station, system)
         except external.LiveLookupError as e:
             res["live_error"] = str(e)
+        except DBAPIError:
+            session.rollback()
+            res["live_error"] = READ_ONLY_MSG
     elif live and stale and not system:
         res["live_error"] = "live market lookup needs the system name"
     return res

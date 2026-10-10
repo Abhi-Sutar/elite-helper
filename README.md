@@ -43,7 +43,8 @@ python -m eddn_helper system Sol [--live]
 python -m eddn_helper factions Sol --history 14 [--faction "Mother Gaia"]
 python -m eddn_helper faction "Mother Gaia"
 python -m eddn_helper market Daedalus --system Sol [--live]
-python -m eddn_helper price-history Daedalus gold --system Sol --days 14
+python -m eddn_helper price-history Daedalus gold --system Sol --days 14 [--bucket 60]
+python -m eddn_helper activity N0B-T4X                  # how many updates are stored for a station, per day
 python -m eddn_helper commodity gold --sell --near Sol --ly 100 [--min-amount 500] [--no-carriers]
 python -m eddn_helper commodity "liquid oxygen" --buy --limit 5
 python -m eddn_helper trades Sol --ly 40 --cargo 256
@@ -51,6 +52,63 @@ python -m eddn_helper prune --days 30
 ```
 
 Terms: `Buy` is what you pay the station (needs stock); `Sell` is what the station pays you (needs demand).
+
+## History mode: thresholded vs full
+
+`price_history` is written in one of two modes (`ELITE_HELPER_HISTORY_MODE`, default by database):
+
+- `thresholded` (default on SQLite): a row only when a price moves 5%+ or stock/demand 25%+, at most once an
+  hour per commodity per station. Small, but not every update.
+- `full` (default on PostgreSQL): one row per commodity for **every** accepted market update, kept 30 days.
+  That is roughly 40 million rows a day at current EDDN volume, so it is meant for PostgreSQL + TimescaleDB
+  (hypertable + compression + retention policy), not SQLite. A late upload that is older than the current
+  snapshot still goes into the history but does not overwrite the snapshot.
+
+Long series are summarised into time buckets (min/avg/max, last stock/demand) once they exceed `--max-points`
+(default 500) so replies stay small; `--bucket MINUTES` picks the size.
+
+## PostgreSQL + TimescaleDB setup (Windows)
+
+Install PostgreSQL 17 and the TimescaleDB 2.30.x Windows add-on, then verify with
+`psql -U postgres -f scripts\pg-smoke-test.sql`. After that:
+
+```
+psql -U postgres -f scripts\pg-setup.sql            # roles elite_writer / elite_reader, databases elite, elite_dev, elite_test
+psql -U postgres -c "\password elite_writer"        # hidden prompts - passwords are never stored in the repo
+psql -U postgres -c "\password elite_reader"
+.\scripts\create-pgpass.ps1                         # writes %LOCALAPPDATA%\elite-helper\pgpass.conf (only you can read it)
+```
+
+Database URLs then carry no password (libpq reads it from the passfile):
+
+```
+postgresql+psycopg://elite_writer@localhost:5432/elite?passfile=C:/Users/<you>/AppData/Local/elite-helper/pgpass.conf
+postgresql+psycopg://elite_reader@localhost:5432/elite?passfile=C:/Users/<you>/AppData/Local/elite-helper/pgpass.conf
+```
+
+Use the writer URL for the listener, `migrate` and `copy-data`, and the reader URL for the MCP server
+(`ELITE_HELPER_DATABASE_URL`). Revision `0002` turns `price_history` into a compressed hypertable
+(1-day chunks, compressed after 2 days, dropped after 30 days) when the `timescaledb` extension is present;
+on SQLite it does nothing. Run the whole test suite on PostgreSQL with the disposable `elite_test` database
+(the tests wipe it!):
+
+```
+$env:TEST_DATABASE_URL = "postgresql+psycopg://elite_writer@localhost:5432/elite_test?passfile=C:/Users/<you>/AppData/Local/elite-helper/pgpass.conf"
+.venv\Scripts\python.exe -m unittest discover tests
+```
+
+## Moving the data to another database (SQLite -> PostgreSQL)
+
+```
+# 1. create an empty database and bring it to the current schema
+python -m eddn_helper --db postgresql+psycopg://elite_writer@localhost/elite migrate upgrade
+# 2. stop the listener that writes to the SQLite file, then copy everything across
+python -m eddn_helper copy-data --from C:\path\to\elite.sqlite --to postgresql+psycopg://elite_writer@localhost/elite
+```
+
+`copy-data` copies parents before children in batches, can be re-run safely (existing rows are skipped), keeps
+commodity ids and reports source vs destination row counts per table. History copied from SQLite stays
+thresholded; full detail starts when the listener begins writing to PostgreSQL.
 
 ## Database schema and migrations (Alembic)
 
