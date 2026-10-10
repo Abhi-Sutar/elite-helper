@@ -8,7 +8,8 @@ from .database import insert_for
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Market, Meta, PriceHistory,
                      System)
 
-RETENTION_DAYS = 30
+RETENTION_DAYS = 30             # commodity data (history and stale markets)
+FACTION_RETENTION_DAYS = 365    # faction history
 HISTORY_MIN_INTERVAL_S = 3600   # at most one history row per commodity per station per hour
 PRICE_CHANGE_PCT = 0.05         # record when buy/sell price moves by >= 5%
 AMOUNT_CHANGE_PCT = 0.25        # record when stock/demand moves by >= 25%
@@ -78,9 +79,14 @@ def upsert_system(session, s, factions, source="eddn"):
     """
     Apply system info (dict from parsers) and, if `factions` is not None, replace that system's faction
     list. Older data never overwrites newer data. Returns True if anything was written.
+
+    Faction history: full mode logs one row per faction for every accepted message (a message older than the
+    stored snapshot is still logged, but does not touch the snapshot); thresholded mode logs a row only when
+    something tracked changed. A faction that disappeared from the system gets a present=False marker row.
     """
     ts = to_dt(s["timestamp"])
     id64 = s["id64"]
+    mode = history_mode(session)
     row = session.execute(select(System.updated_at, System.factions_updated_at)
                           .where(System.id64 == id64)).first()
     vals = {k: s[k] for k in _SYSTEM_FIELDS if s.get(k) is not None}
@@ -95,33 +101,80 @@ def upsert_system(session, s, factions, source="eddn"):
             session.execute(update(System.__table__).where(System.id64 == id64).values(updated_at=ts, source=source, **vals))
             wrote = True
 
-    if factions is not None and (fac_ts is None or ts >= fac_ts):
-        session.execute(delete(Faction.__table__).where(Faction.system_id64 == id64))
-        session.execute(insert_for(session)(Faction.__table__), [{
-            "system_id64": id64, "name": f["name"], "government": f.get("government"),
-            "allegiance": f.get("allegiance"), "influence": f.get("influence"), "state": f.get("state"),
-            "happiness": f.get("happiness"), "active_states": f.get("active_states") or [],
-            "pending_states": f.get("pending_states") or [],
-            "recovering_states": f.get("recovering_states") or [],
-            "is_controlling": bool(f.get("is_controlling")), "updated_at": ts, "source": source,
-        } for f in factions])
+    if factions is None:
+        return wrote
+    if ts < datetime.now(timezone.utc) - timedelta(days=FACTION_RETENTION_DAYS):
+        return wrote  # would be pruned straight away
+
+    if fac_ts is not None and ts < fac_ts:  # late upload: history only, snapshot stays as it is
+        if mode == "full":
+            _insert_faction_history(session, id64, ts, factions)
+            wrote = True
+        return wrote
+
+    previous = {r.name for r in session.execute(select(Faction.name).where(Faction.system_id64 == id64))}
+    session.execute(delete(Faction.__table__).where(Faction.system_id64 == id64))
+    session.execute(insert_for(session)(Faction.__table__), [{
+        "system_id64": id64, "name": f["name"], "government": f.get("government"),
+        "allegiance": f.get("allegiance"), "influence": f.get("influence"), "state": f.get("state"),
+        "happiness": f.get("happiness"), "active_states": f.get("active_states") or [],
+        "pending_states": f.get("pending_states") or [],
+        "recovering_states": f.get("recovering_states") or [],
+        "is_controlling": bool(f.get("is_controlling")), "updated_at": ts, "source": source,
+    } for f in factions])
+    if mode == "full":
+        _insert_faction_history(session, id64, ts, factions)
+    else:
         for f in factions:
-            _record_faction_history(session, id64, f["name"], ts, f.get("influence"), f.get("state"))
-        session.execute(update(System.__table__).where(System.id64 == id64).values(factions_updated_at=ts))
-        wrote = True
-    return wrote
+            _record_faction_history(session, id64, ts, f)
+    gone = sorted(previous - {f["name"] for f in factions})
+    if gone:  # the faction left (or was retreated from) this system
+        session.execute(insert_for(session)(FactionHistory.__table__).on_conflict_do_nothing(), [
+            {"system_id64": id64, "faction": name, "ts": ts, "influence": None, "state": None, "happiness": None,
+             "active_states": [], "pending_states": [], "recovering_states": [], "present": False}
+            for name in gone])
+    session.execute(update(System.__table__).where(System.id64 == id64).values(factions_updated_at=ts))
+    return True
 
 
-def _record_faction_history(session, id64, faction, ts, influence, state):
-    last = session.execute(select(FactionHistory.influence, FactionHistory.state)
-                           .where(FactionHistory.system_id64 == id64, FactionHistory.faction == faction)
-                           .order_by(FactionHistory.ts.desc()).limit(1)).first()
-    if last is not None and last.state == state and last.influence is not None \
-            and influence is not None and abs(last.influence - influence) < 0.0005:
+def _history_row(id64, ts, f):
+    return {"system_id64": id64, "faction": f["name"], "ts": ts, "influence": f.get("influence"),
+            "state": f.get("state"), "happiness": f.get("happiness"),
+            "active_states": f.get("active_states") or [], "pending_states": f.get("pending_states") or [],
+            "recovering_states": f.get("recovering_states") or [], "present": True}
+
+
+def _insert_faction_history(session, id64, ts, factions):
+    """Full mode: one row per faction for this observation (same-timestamp duplicates are ignored)."""
+    session.execute(insert_for(session)(FactionHistory.__table__).on_conflict_do_nothing(),
+                    [_history_row(id64, ts, f) for f in factions])
+
+
+def _state_key(items):
+    """Order-insensitive comparison key for a state list in either the object or legacy string format."""
+    out = []
+    for it in items or []:
+        if isinstance(it, dict):
+            out.append((it.get("state"), it.get("trend")))
+        else:
+            out.append((it, None))
+    return tuple(sorted(out, key=lambda x: (str(x[0]), str(x[1]))))
+
+
+def _record_faction_history(session, id64, ts, f):
+    """Thresholded mode: write a row only if influence, state, happiness or a state list changed."""
+    last = session.execute(select(FactionHistory).where(FactionHistory.system_id64 == id64,
+                                                        FactionHistory.faction == f["name"])
+                           .order_by(FactionHistory.ts.desc()).limit(1)).scalar_one_or_none()
+    new = _history_row(id64, ts, f)
+    if last is not None and last.present and last.state == new["state"] and last.happiness == new["happiness"] \
+            and last.influence is not None and new["influence"] is not None \
+            and abs(last.influence - new["influence"]) < 0.0005 \
+            and _state_key(last.active_states) == _state_key(new["active_states"]) \
+            and _state_key(last.pending_states) == _state_key(new["pending_states"]) \
+            and _state_key(last.recovering_states) == _state_key(new["recovering_states"]):
         return
-    session.execute(insert_for(session)(FactionHistory.__table__).values(
-        system_id64=id64, faction=faction, ts=ts, influence=influence, state=state
-    ).on_conflict_do_nothing())
+    session.execute(insert_for(session)(FactionHistory.__table__).on_conflict_do_nothing(), [new])
 
 
 # ---- markets / prices ------------------------------------------------------------------------
@@ -178,11 +231,16 @@ def upsert_market(session, m, prices, source="eddn"):
     return True
 
 
+def _price_row(market_id, commodity_id, ts, p):
+    return {"market_id": market_id, "commodity_id": commodity_id, "ts": ts, "buy_price": p.get("buy_price"),
+            "sell_price": p.get("sell_price"), "stock": p.get("stock"), "demand": p.get("demand"),
+            "mean_price": p.get("mean_price"), "stock_bracket": p.get("stock_bracket"),
+            "demand_bracket": p.get("demand_bracket")}
+
+
 def _insert_history(session, market_id, ts, prices, ids):
     """Full mode: one time-series row per commodity for this message (same-timestamp duplicates are ignored)."""
-    rows = [{"market_id": market_id, "commodity_id": ids[p["commodity"]], "ts": ts,
-             "buy_price": p.get("buy_price"), "sell_price": p.get("sell_price"),
-             "stock": p.get("stock"), "demand": p.get("demand")} for p in prices]
+    rows = [_price_row(market_id, ids[p["commodity"]], ts, p) for p in prices]
     if rows:
         session.execute(insert_for(session)(PriceHistory.__table__).on_conflict_do_nothing(), rows)
 
@@ -216,23 +274,22 @@ def _record_price_history(session, market_id, ts, prices, ids):
                     or _changed(prev.stock, p.get("stock"), AMOUNT_CHANGE_PCT)
                     or _changed(prev.demand, p.get("demand"), AMOUNT_CHANGE_PCT)):
                 continue
-        rows.append({"market_id": market_id, "commodity_id": cid, "ts": ts, "buy_price": p.get("buy_price"),
-                     "sell_price": p.get("sell_price"), "stock": p.get("stock"), "demand": p.get("demand")})
+        rows.append(_price_row(market_id, cid, ts, p))
     if rows:
         session.execute(insert_for(session)(PriceHistory.__table__).on_conflict_do_nothing(), rows)
 
 
 # ---- maintenance -----------------------------------------------------------------------------
 
-def history_is_hypertable(session):
-    """True when price_history is a TimescaleDB hypertable, whose retention policy drops old chunks itself."""
+def history_is_hypertable(session, table="price_history"):
+    """True when the history table is a TimescaleDB hypertable, whose retention policy drops old chunks itself."""
     if session.get_bind().dialect.name != "postgresql":
         return False
     if session.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")).first() is None:
         return False
     return session.execute(text(
-        "SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'price_history'"
-    )).first() is not None
+        "SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = :t"
+    ), {"t": table}).first() is not None
 
 
 def prune(session, days=RETENTION_DAYS):
@@ -243,11 +300,14 @@ def prune(session, days=RETENTION_DAYS):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     stale = select(Market.market_id).where(Market.updated_at < cutoff)
     out = {}
-    if history_is_hypertable(session):
+    if history_is_hypertable(session, "price_history"):
         out["price_history"] = 0
     else:
         out["price_history"] = session.execute(delete(PriceHistory.__table__).where(
             (PriceHistory.ts < cutoff) | PriceHistory.market_id.in_(stale))).rowcount
+    faction_cutoff = datetime.now(timezone.utc) - timedelta(days=FACTION_RETENTION_DAYS)
+    out["faction_history"] = 0 if history_is_hypertable(session, "faction_history") else session.execute(
+        delete(FactionHistory.__table__).where(FactionHistory.ts < faction_cutoff)).rowcount
     out["commodity_prices"] = session.execute(delete(CommodityPrice.__table__).where(
         CommodityPrice.market_id.in_(stale))).rowcount
     out["markets"] = session.execute(delete(Market.__table__).where(Market.updated_at < cutoff)).rowcount

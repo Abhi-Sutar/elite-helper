@@ -40,7 +40,44 @@ class TimescaleTests(unittest.TestCase):
         procs = {r[0] for r in self.s.execute(text(
             "SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'price_history'"))}
         self.assertTrue({"policy_compression", "policy_retention"} <= procs, procs)
-        self.assertEqual(migrate.status(self.s.get_bind())["current"], "0002")
+        self.assertEqual(migrate.status(self.s.get_bind())["current"], "0003")
+
+    def test_faction_history_is_a_compressed_hypertable_with_a_one_year_retention_policy(self):
+        self.assertTrue(store.history_is_hypertable(self.s, "faction_history"))
+        self.assertTrue(self.scalar("SELECT compression_enabled FROM timescaledb_information.hypertables "
+                                    "WHERE hypertable_name = 'faction_history'"))
+        jobs = {r[0]: r[1] for r in self.s.execute(text(
+            "SELECT proc_name, config::text FROM timescaledb_information.jobs WHERE hypertable_name = 'faction_history'"))}
+        self.assertIn("policy_retention", jobs)
+        self.assertIn("1 year", jobs["policy_retention"])
+        self.assertIn("policy_compression", jobs)
+
+    def test_faction_observations_states_and_left_markers_on_postgres(self):
+        from test_timeline import at, fac, sys_msg
+        self.feed(sys_msg([fac("A", 0.6, pending=[("Expansion", 1)]), fac("B", 0.4)], at(5)))
+        self.feed(sys_msg([fac("A", 0.6, pending=[("Expansion", 1)])], at(4)))
+        rows = queries.faction_history(self.s, "Sol", 7)["history"]
+        self.assertEqual(len(rows), 4)  # A twice, B once present, B once left
+        a = [r for r in rows if r["faction"] == "A"][0]
+        self.assertEqual(a["pending_states"], [{"state": "Expansion", "trend": 1}])
+        t = queries.faction_timeline(self.s, "Sol", "B")
+        self.assertEqual(len(t["left_events"]), 1)
+
+    def test_deleting_a_system_cascades_into_the_faction_hypertable(self):
+        from test_timeline import at, fac, sys_msg
+        from eddn_helper.models import FactionHistory, System
+        self.feed(sys_msg([fac("A", 0.6)], at(3)))
+        self.s.delete(self.s.get(System, 1))
+        self.s.commit()
+        self.assertEqual(self.s.execute(select(func.count()).select_from(FactionHistory)).scalar_one(), 0)
+
+    def test_new_price_columns_survive_compression(self):
+        self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1000, 100, 0, 0)], when=ts(60)))
+        self.s.execute(text("SELECT compress_chunk(c, if_not_compressed => true) "
+                            "FROM show_chunks('price_history', older_than => INTERVAL '1 day') c"))
+        self.s.commit()
+        pt = queries.price_history(self.s, "hub", "gold", max_points=0)["series"][0]
+        self.assertEqual((pt["buy_price"], pt["mean_price"], pt["stock_bracket"]), (1000, 1000, 2))
 
     def test_every_update_is_stored_and_late_upload_leaves_snapshot_alone(self):
         for h in (5, 4.9, 4.8):

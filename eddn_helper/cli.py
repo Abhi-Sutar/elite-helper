@@ -1,6 +1,7 @@
 """Command-line interface: python -m eddn_helper <command> [--json]."""
 
 import argparse
+import csv
 import json
 import sys
 
@@ -29,11 +30,72 @@ def table(rows, cols):
             print("  ".join("-" * w for w in widths))
 
 
-def emit(args, data, human):
-    if args.json:
+def emit(args, data, human, csv_rows=None):
+    """Print as JSON (--json), CSV (--csv, if the command supports it) or human-readable text."""
+    if getattr(args, "csv", False):
+        if csv_rows is None:
+            print("--csv is not available for this command", file=sys.stderr)
+            return
+        columns, rows = csv_rows(data)
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(columns)
+        writer.writerows([[("" if r.get(c) is None else r.get(c)) for c in columns] for r in rows])
+    elif args.json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
         human(data)
+
+
+PRICE_RAW = ["ts", "commodity", "buy_price", "sell_price", "mean_price", "stock", "demand",
+             "stock_bracket", "demand_bracket"]
+PRICE_BUCKET = ["ts", "commodity", "updates", "buy_min", "buy_avg", "buy_max", "sell_min", "sell_avg", "sell_max",
+                "stock_min", "stock_avg", "stock_max", "demand_min", "demand_avg", "demand_max", "mean_avg",
+                "stock_bracket", "demand_bracket"]
+
+
+def price_csv(d):
+    """Flatten a (single or multi commodity) price_history reply. An inactive side (price 0) is left empty."""
+    if not d.get("found") or d.get("ambiguous"):
+        return PRICE_RAW, []
+    blocks = d["series_by_commodity"] if "series_by_commodity" in d else {d["commodity"]: d}
+    bucketed = any("bucket_minutes" in b for b in blocks.values())
+    rows = []
+    for sym, block in blocks.items():
+        for pt in block["series"]:
+            row = dict(pt, commodity=sym)
+            for key in ("buy_price", "sell_price", "mean_price"):
+                if row.get(key) == 0:
+                    row[key] = None
+            rows.append(row)
+    return (PRICE_BUCKET if bucketed else PRICE_RAW), rows
+
+
+def _states_text(items, with_trend=False):
+    out = []
+    for it in items or []:
+        if isinstance(it, dict):
+            out.append(f"{it['state']}:{it['trend']}" if with_trend and it.get("trend") is not None else it["state"])
+        else:
+            out.append(str(it))
+    return "|".join(out)
+
+
+FACTION_COLUMNS = ["ts", "faction", "present", "influence_pct", "state", "happiness", "active_states",
+                   "pending_states", "recovering_states"]
+
+
+def faction_csv(d):
+    rows = []
+    if d.get("history"):
+        hist = d["history"]["history"] if isinstance(d["history"], dict) else d["history"]
+        for h in hist:
+            rows.append(dict(h, active_states=_states_text(h["active_states"]),
+                             pending_states=_states_text(h["pending_states"], True),
+                             recovering_states=_states_text(h["recovering_states"], True)))
+    return FACTION_COLUMNS, rows
+
+
+TIMELINE_COLUMNS = ["field", "value", "trend", "start", "last_seen", "ended_at"]
 
 
 def not_found(what):
@@ -134,7 +196,8 @@ def print_factions(factions):
 def cmd_factions(args, session):
     res = live.system_info(session, args.system, args.live, args.max_age_hours)
     if args.history:
-        res["history"] = queries.faction_history(session, args.system, args.history, args.faction)
+        res["history"] = queries.faction_history(session, args.system, args.history, args.faction,
+                                                 args.max_points)
 
     def human(d):
         if not d["found"]:
@@ -142,10 +205,15 @@ def cmd_factions(args, session):
         print(f"{d['system']}  (faction data age: {fmt_age(d['factions_age_hours'])}, source: {d['source']})")
         print_factions(d["factions"])
         if args.history:
-            print(f"\nInfluence changes, last {args.history} days:")
-            table(d["history"]["history"], [("Time", "ts"), ("Faction", "faction"),
-                                            ("Infl%", "influence_pct"), ("State", "state")])
-    emit(args, res, human)
+            h = d["history"]
+            print(f"\nObservations, last {args.history} days: {h['observations']} stored, {h['returned']} shown")
+            table(h["history"], [
+                ("Time", "ts"), ("Faction", "faction"),
+                ("Infl%", lambda r: r["influence_pct"] if r["present"] else "LEFT"), ("State", "state"),
+                ("Mood", "happiness"), ("Active", lambda r: _states_text(r["active_states"])),
+                ("Pending", lambda r: _states_text(r["pending_states"], True)),
+                ("Recovering", lambda r: _states_text(r["recovering_states"], True))])
+    emit(args, res, human, faction_csv)
 
 
 def cmd_faction(args, session):
@@ -154,8 +222,31 @@ def cmd_faction(args, session):
             return not_found(f"Faction '{d['faction']}'")
         table(d["systems"], [("System", "system"), ("Faction", "faction"), ("Infl%", "influence_pct"),
                              ("State", "state"), ("Controls", lambda r: "yes" if r["is_controlling"] else ""),
+                             ("History rows", "history_rows"), ("First seen", lambda r: r["first_seen"] or "-"),
                              ("Age", lambda r: fmt_age(r["age_hours"]))])
     emit(args, queries.faction_presence(session, args.name), human)
+
+
+def cmd_timeline(args, session):
+    def human(d):
+        if not d["found"]:
+            return print(d.get("note") or f"System '{d['system']}' / faction '{d['faction']}' not found",
+                         file=sys.stderr)
+        infl = d["influence"]
+        print(f"{d['faction']} in {d['system']}: {d['observations']} observations "
+              f"({d['first_observation']} -> {d['last_observation']})")
+        if infl:
+            print(f"  influence {infl[0]['influence_pct']}% -> {infl[-1]['influence_pct']}%  "
+                  f"(min {min(p['influence_pct'] for p in infl)}%, max {max(p['influence_pct'] for p in infl)}%)")
+        for t in d["left_events"]:
+            print(f"  LEFT the system at {t}")
+        table(d["intervals"], [("Field", "field"), ("Value", "value"),
+                               ("Trend", lambda r: "" if r["trend"] is None else r["trend"]),
+                               ("Start", "start"), ("Last seen", "last_seen"),
+                               ("Ended", lambda r: r["ended_at"] or "(still present)")])
+        print(f"  {d['note']}")
+    emit(args, queries.faction_timeline(session, args.system, args.faction, args.days, args.max_points), human,
+         lambda d: (TIMELINE_COLUMNS, d.get("intervals", [])))
 
 
 def cmd_market(args, session):
@@ -187,22 +278,43 @@ def cmd_price_history(args, session):
             return not_found(f"Station '{d['station']}'")
         if d.get("ambiguous"):
             return print("Multiple matches, pass --system.")
+        if "series_by_commodity" in d:
+            series = d["series_by_commodity"]
+            note = ""
+            if d.get("truncated"):
+                note = f" (showing {len(series)} of {d['commodities_available']}; --all-commodities lifts the cap)"
+            print(f"{d['station']} ({d['system']}), last {d['days']} days, {len(series)} commodities{note}")
+            table([dict(commodity=sym, **blk) for sym, blk in series.items()], [
+                ("Commodity", "commodity"), ("Updates", "updates"),
+                ("Buy avg", lambda r: fmt_cr(r["buy_price_stats"]["avg"]) if r["buy_price_stats"] else "-"),
+                ("Sell avg", lambda r: fmt_cr(r["sell_price_stats"]["avg"]) if r["sell_price_stats"] else "-"),
+                ("Stock avg", lambda r: r["stock_stats"]["avg"] if r["stock_stats"] else "-"),
+                ("Demand avg", lambda r: r["demand_stats"]["avg"] if r["demand_stats"] else "-"),
+                ("Last update", lambda r: r["last_update"] or "-")])
+            print("Use one commodity for its series, or --csv / --json for every point.")
+            return
         bucket = d.get("bucket_minutes")
         print(f"{d['commodity']} at {d['station']} ({d['system']}), last {d['days']} days, "
               f"{d['updates']} updates" + (f", shown as {d['points']} buckets of {bucket} min" if bucket else ""))
-        for k in ("buy_price_stats", "sell_price_stats"):
-            if d[k]:
-                print(f"  {k.split('_')[0]}: min {fmt_cr(d[k]['min'])}  avg {fmt_cr(d[k]['avg'])}  max {fmt_cr(d[k]['max'])}")
+        for label, key in (("buy ", "buy_price_stats"), ("sell", "sell_price_stats")):
+            if d[key]:
+                print(f"  {label}: min {fmt_cr(d[key]['min'])}  avg {fmt_cr(d[key]['avg'])}  max {fmt_cr(d[key]['max'])}")
+        for label, key in (("stock ", "stock_stats"), ("demand", "demand_stats")):
+            if d[key]:
+                print(f"  {label}: min {d[key]['min']:,}  avg {d[key]['avg']:,}  max {d[key]['max']:,}")
         money = lambda key: (lambda r: fmt_cr(r[key]) if r[key] else "-")
         if bucket:
             table(d["series"], [("Bucket start", "ts"), ("Updates", "updates"), ("Buy avg", money("buy_avg")),
-                                ("Buy min-max", lambda r: f"{r['buy_min'] or '-'}-{r['buy_max'] or '-'}"),
-                                ("Sell avg", money("sell_avg")), ("Stock", "stock"), ("Demand", "demand")])
+                                ("Sell avg", money("sell_avg")), ("Mean", money("mean_avg")),
+                                ("Stock avg", "stock_avg"), ("Stock min-max", lambda r: f"{r['stock_min']}-{r['stock_max']}"),
+                                ("Demand avg", "demand_avg"),
+                                ("Demand min-max", lambda r: f"{r['demand_min']}-{r['demand_max']}")])
         else:
             table(d["series"], [("Time", "ts"), ("Buy", money("buy_price")), ("Stock", "stock"),
-                                ("Sell", money("sell_price")), ("Demand", "demand")])
+                                ("Sell", money("sell_price")), ("Demand", "demand"), ("Mean", money("mean_price"))])
     emit(args, queries.price_history(session, args.station, args.commodity, args.system, args.days,
-                                     args.bucket, args.max_points), human)
+                                     args.bucket, args.max_points, args.all_commodities, args.max_commodities),
+         human, price_csv)
 
 
 def cmd_activity(args, session):
@@ -281,6 +393,8 @@ def build_parser():
         sp = sub.add_parser(name, help=help_, description=help_)
         sp.set_defaults(func=fn)
         sp.add_argument("--json", action="store_true", help="machine-readable JSON output")
+        if name in ("price-history", "factions", "timeline"):
+            sp.add_argument("--csv", action="store_true", help="CSV on stdout (redirect to a file for charting)")
         if live_opt:
             sp.add_argument("--live", action="store_true", help="query EDSM if local data is missing or stale")
             sp.add_argument("--max-age-hours", type=float, default=48, help="staleness threshold for --live (default 48)")
@@ -312,14 +426,24 @@ def build_parser():
     sp.add_argument("system")
     sp.add_argument("--history", type=int, metavar="DAYS", help="also show influence changes over N days")
     sp.add_argument("--faction", help="limit history to one faction")
+    sp.add_argument("--max-points", type=int, default=500,
+                    help="thin long histories to about this many rows per faction, keeping every change (0 = never)")
+    sp = add("timeline", cmd_timeline, "Chart-ready view of one faction in one system: influence and state intervals")
+    sp.add_argument("system")
+    sp.add_argument("faction")
+    sp.add_argument("--days", type=int, default=30)
+    sp.add_argument("--max-points", type=int, default=500, help="thin the influence series (0 = never)")
     sp = add("faction", cmd_faction, "Where a faction is present, with influence and state")
     sp.add_argument("name")
     sp = add("market", cmd_market, "Commodity table for a station", True)
     sp.add_argument("station")
     sp.add_argument("--system", help="system name (required for --live, and to disambiguate)")
-    sp = add("price-history", cmd_price_history, "Price/stock/demand time series for a commodity at a station")
+    sp = add("price-history", cmd_price_history,
+             "Price, stock and demand time series at a station: one commodity, a,b,c, or 'all'")
     sp.add_argument("station")
-    sp.add_argument("commodity")
+    sp.add_argument("commodity", help="commodity name, comma-separated list, or 'all'")
+    sp.add_argument("--all-commodities", action="store_true", help="with 'all': no cap on the number of commodities")
+    sp.add_argument("--max-commodities", type=int, default=25, help="with 'all': cap (default 25, busiest first)")
     sp.add_argument("--system")
     sp.add_argument("--days", type=int, default=30)
     sp.add_argument("--bucket", type=int, metavar="MINUTES", help="summarise into buckets of this many minutes")

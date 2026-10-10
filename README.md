@@ -40,10 +40,12 @@ All commands accept `--json`.
 ```
 python -m eddn_helper status
 python -m eddn_helper system Sol [--live]
-python -m eddn_helper factions Sol --history 14 [--faction "Mother Gaia"]
-python -m eddn_helper faction "Mother Gaia"
+python -m eddn_helper factions Sol --history 14 [--faction "Mother Gaia"] [--csv]
+python -m eddn_helper timeline Sol "Mother Gaia" --days 30 [--csv]        # state/happiness intervals + influence
+python -m eddn_helper faction "Mother Gaia"                              # every system it is in + how much history exists
 python -m eddn_helper market Daedalus --system Sol [--live]
-python -m eddn_helper price-history Daedalus gold --system Sol --days 14 [--bucket 60]
+python -m eddn_helper price-history Daedalus gold --system Sol --days 14 [--bucket 60] [--csv]
+python -m eddn_helper price-history N0B-T4X all --days 7 --csv > carrier.csv   # every commodity at a station
 python -m eddn_helper activity N0B-T4X                  # how many updates are stored for a station, per day
 python -m eddn_helper commodity gold --sell --near Sol --ly 100 [--min-amount 500] [--no-carriers]
 python -m eddn_helper commodity "liquid oxygen" --buy --limit 5
@@ -53,12 +55,32 @@ python -m eddn_helper prune --days 30
 
 Terms: `Buy` is what you pay the station (needs stock); `Sell` is what the station pays you (needs demand).
 
+## Reading time series
+
+| What | Command / MCP tool | Each point has |
+|---|---|---|
+| Price + amount of commodities at a station | `price-history <station> <commodity\|a,b\|all>` / `price_history` | `buy_price` (station sells; needs stock), `sell_price` (station buys; needs demand), `mean_price` (galactic average), `stock` (supply), `demand`, `stock_bracket`, `demand_bracket` |
+| A faction in a system, observation by observation | `factions <system> --history N` / `faction_history` | influence %, main state, happiness, active / pending / recovering states (pending/recovering with the game's trend), `present` |
+| The same, as chart-ready intervals | `timeline <system> <faction>` / `faction_timeline` | influence series + intervals `{field, value, trend, start, last_seen, ended_at}` |
+| Which systems a faction is in | `faction <name>` / `faction_presence` | influence, state, `history_rows`, `first_seen` per system |
+
+Notes: a price of `0` means that side of the market is inactive (`--csv` leaves it empty so charts do not plot
+zeros); stock and demand of `0` are real values. Series longer than `--max-points` come back summarised in time
+buckets with min/avg/max of prices, stock and demand; `--bucket MINUTES` picks the size and `--csv` exports every
+point. Timeline intervals start at the first observation in the window and end at the first observation where the
+value is gone (`ended_at`, empty while still present); a `present=false` row means the faction left the system.
+
+Retention: market history 30 days; faction history 1 year; current snapshots always replaced in place. History starts
+when the listener first saw a station or system (EDDN keeps nothing), and rows written before the 0003 migration
+have no mean price, brackets, happiness or state lists.
+
 ## History mode: thresholded vs full
 
 `price_history` is written in one of two modes (`ELITE_HELPER_HISTORY_MODE`, default by database):
 
 - `thresholded` (default on SQLite): a row only when a price moves 5%+ or stock/demand 25%+, at most once an
-  hour per commodity per station. Small, but not every update.
+  hour per commodity per station (factions: when influence, state, happiness or a state list changes). Small, but
+  not every update.
 - `full` (default on PostgreSQL): one row per commodity for **every** accepted market update, kept 30 days.
   That is roughly 40 million rows a day at current EDDN volume, so it is meant for PostgreSQL + TimescaleDB
   (hypertable + compression + retention policy), not SQLite. A late upload that is older than the current
@@ -96,6 +118,18 @@ on SQLite it does nothing. Run the whole test suite on PostgreSQL with the dispo
 $env:TEST_DATABASE_URL = "postgresql+psycopg://elite_writer@localhost:5432/elite_test?passfile=C:/Users/<you>/AppData/Local/elite-helper/pgpass.conf"
 .venv\Scripts\python.exe -m unittest discover tests
 ```
+
+### Choosing a compression layout
+
+`price_history` and `faction_history` start with a layout chosen from a tiny sample. Once a day or two of full
+data exists, compare the candidates on your real data (production tables are only read):
+
+```
+psql -h localhost -U elite_writer -d elite -v span="2 days" -v fspan="14 days" -f scripts\pg-compression-bench.sql
+```
+
+It prints size, compression ratio and query timings per layout. Apply the winner with a new Alembic revision
+(`ALTER TABLE ... SET (timescaledb.compress_segmentby = ..., timescaledb.compress_orderby = ...)`).
 
 ## Moving the data to another database (SQLite -> PostgreSQL)
 

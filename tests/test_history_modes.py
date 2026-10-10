@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -58,6 +59,21 @@ class FullHistoryTests(unittest.TestCase):
         self.assertTrue(self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1500, 100, 0, 0)], when=ts(3))))
         self.assertEqual(self.count_history(), 2)
         self.assertEqual(queries.station_market(self.s, "hub")["commodities"][0]["buy_price"], 2000)
+
+    def test_prune_expires_old_history_in_full_mode(self):
+        if store.history_is_hypertable(self.s):
+            self.skipTest("on a hypertable the retention policy drops old chunks (covered in test_pg_timescale)")
+        self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(2)))
+        self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 2, 1, 0, 0)], when=ts(1)))
+        oldest = self.s.execute(select(PriceHistory).order_by(PriceHistory.ts)).scalars().first()
+        oldest.ts = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        self.s.commit()
+        self.assertEqual(store.prune(self.s, 30)["price_history"], 1)
+        self.assertEqual(self.count_history(), 1)
+
+    def test_market_message_older_than_retention_is_not_stored(self):
+        self.assertFalse(self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * 40))))
+        self.assertEqual(self.count_history(), 0)
 
     def test_snapshot_drops_commodities_that_disappear(self):
         self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0), ("tea", 2, 2, 0, 0)], when=ts(3)))

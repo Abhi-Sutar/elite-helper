@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (JSON, BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index,
-                        Integer, MetaData, String, false, func)
+                        Integer, MetaData, SmallInteger, String, false, func, true)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -97,13 +97,21 @@ class Faction(Base):
 
 
 class FactionHistory(Base):
-    """Change-only time series of faction influence/state per system."""
+    """
+    Time series of one faction in one system: one row per observation in full mode (only meaningful changes in
+    thresholded mode). States are lists of {"state", "trend"}; present=False marks that the faction left the system.
+    """
     __tablename__ = "faction_history"
     system_id64: Mapped[int] = mapped_column(ForeignKey("systems.id64", ondelete="CASCADE"), primary_key=True)
     faction: Mapped[str] = mapped_column(String(120), primary_key=True)
     ts: Mapped[datetime] = mapped_column(UTCDateTime, primary_key=True)
     influence: Mapped[float | None] = mapped_column(Float)
     state: Mapped[str | None] = mapped_column(String(40))
+    happiness: Mapped[str | None] = mapped_column(String(40))
+    active_states: Mapped[list | None] = mapped_column(JsonType)
+    pending_states: Mapped[list | None] = mapped_column(JsonType)
+    recovering_states: Mapped[list | None] = mapped_column(JsonType)
+    present: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
     __table_args__ = (Index("ix_faction_history_ts", "ts"),)
 
@@ -145,7 +153,11 @@ class CommodityPrice(Base):
 
 
 class PriceHistory(Base):
-    """Time series, one row per meaningful change. PK includes ts so it can become a hypertable/partitioned."""
+    """
+    Time series of one commodity at one market: one row per market update in full mode (only meaningful changes in
+    thresholded mode). PK includes ts so it can be a hypertable. buy_price is what the station sells at (needs
+    stock); sell_price is what it pays (needs demand); a side that is inactive reports 0.
+    """
     __tablename__ = "price_history"
     market_id: Mapped[int] = mapped_column(ForeignKey("markets.market_id", ondelete="CASCADE"), primary_key=True)
     commodity_id: Mapped[int] = mapped_column(ForeignKey("commodities.id"), primary_key=True)
@@ -154,6 +166,9 @@ class PriceHistory(Base):
     sell_price: Mapped[int | None] = mapped_column(Integer)
     stock: Mapped[int | None] = mapped_column(BigInteger)
     demand: Mapped[int | None] = mapped_column(BigInteger)
+    mean_price: Mapped[int | None] = mapped_column(Integer)
+    stock_bracket: Mapped[int | None] = mapped_column(SmallInteger)
+    demand_bracket: Mapped[int | None] = mapped_column(SmallInteger)
 
     __table_args__ = (Index("ix_price_history_ts", "ts"),)
 
