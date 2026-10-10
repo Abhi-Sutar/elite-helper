@@ -48,7 +48,9 @@ def emit(args, data, human, csv_rows=None):
 
 PRICE_RAW = ["ts", "commodity", "buy_price", "sell_price", "mean_price", "stock", "demand",
              "stock_bracket", "demand_bracket"]
-PRICE_BUCKET = ["ts", "commodity", "updates", "buy_min", "buy_avg", "buy_max", "sell_min", "sell_avg", "sell_max",
+PRICE_RESAMPLED = ["ts", "commodity", "buy_price", "sell_price", "mean_price", "stock", "demand", "stock_bracket",
+                   "demand_bracket", "listed", "stale", "updates", "carried"]
+PRICE_BUCKET = ["ts", "commodity", "updates", "changes", "buy_min", "buy_avg", "buy_max", "sell_min", "sell_avg", "sell_max",
                 "stock_min", "stock_avg", "stock_max", "demand_min", "demand_avg", "demand_max", "mean_avg",
                 "stock_bracket", "demand_bracket"]
 
@@ -59,6 +61,7 @@ def price_csv(d):
         return PRICE_RAW, []
     blocks = d["series_by_commodity"] if "series_by_commodity" in d else {d["commodity"]: d}
     bucketed = any("bucket_minutes" in b for b in blocks.values())
+    resampled = any("resample_minutes" in b for b in blocks.values())
     rows = []
     for sym, block in blocks.items():
         for pt in block["series"]:
@@ -67,7 +70,20 @@ def price_csv(d):
                 if row.get(key) == 0:
                     row[key] = None
             rows.append(row)
-    return (PRICE_BUCKET if bucketed else PRICE_RAW), rows
+    return (PRICE_RESAMPLED if resampled else PRICE_BUCKET if bucketed else PRICE_RAW), rows
+
+
+TRAFFIC_COLUMNS = ["ts", "updates", "distinct_uploaders", "changed"]
+
+
+def traffic_csv(d):
+    return TRAFFIC_COLUMNS, d.get("series", []) if d.get("found", True) else []
+
+
+def busiest_csv(d):
+    rows = d.get("stations") or d.get("systems") or []
+    cols = list(rows[0]) if rows else ["station"]
+    return cols, rows
 
 
 def _states_text(items, with_trend=False):
@@ -262,11 +278,16 @@ def cmd_market(args, session):
             return
         print(f"{d['station']} ({d['system']}) {d['station_type'] or ''}  economies={', '.join(d['economies'])}  "
               f"age={fmt_age(d['age_hours'])}  source={d['source']}")
-        rows = [c for c in d["commodities"] if c["stock"] or c["demand"]]
+        rows = [c for c in d["commodities"] if (c["stock"] or c["demand"]) and not c["stale"]]
+        hidden = sum(1 for c in d["commodities"] if c["stale"])
         table(rows, [("Commodity", "commodity"), ("Buy", lambda r: fmt_cr(r["buy_price"]) if r["stock"] else "-"),
                      ("Stock", lambda r: r["stock"] or "-"),
                      ("Sell", lambda r: fmt_cr(r["sell_price"]) if r["demand"] else "-"),
-                     ("Demand", lambda r: r["demand"] or "-"), ("Mean", "mean_price")])
+                     ("Demand", lambda r: r["demand"] or "-"), ("Mean", "mean_price"),
+                     ("Seen", lambda r: fmt_age(r["seen_age_hours"]))])
+        if hidden:
+            print(f"({hidden} commodities not reported for 48+ hours before the last update are hidden; "
+                  f"see --json for all)")
         if d.get("live_error"):
             print(f"live lookup error: {d['live_error']}", file=sys.stderr)
     emit(args, res, human)
@@ -278,24 +299,28 @@ def cmd_price_history(args, session):
             return not_found(f"Station '{d['station']}'")
         if d.get("ambiguous"):
             return print("Multiple matches, pass --system.")
+        updates = f"{d['updates']} updates ({d['updates_source']})"
         if "series_by_commodity" in d:
             series = d["series_by_commodity"]
             note = ""
             if d.get("truncated"):
                 note = f" (showing {len(series)} of {d['commodities_available']}; --all-commodities lifts the cap)"
-            print(f"{d['station']} ({d['system']}), last {d['days']} days, {len(series)} commodities{note}")
+            print(f"{d['station']} ({d['system']}), last {d['days']} days, {updates}, "
+                  f"{len(series)} commodities{note}")
             table([dict(commodity=sym, **blk) for sym, blk in series.items()], [
-                ("Commodity", "commodity"), ("Updates", "updates"),
+                ("Commodity", "commodity"), ("Rows", "rows"),
                 ("Buy avg", lambda r: fmt_cr(r["buy_price_stats"]["avg"]) if r["buy_price_stats"] else "-"),
                 ("Sell avg", lambda r: fmt_cr(r["sell_price_stats"]["avg"]) if r["sell_price_stats"] else "-"),
                 ("Stock avg", lambda r: r["stock_stats"]["avg"] if r["stock_stats"] else "-"),
                 ("Demand avg", lambda r: r["demand_stats"]["avg"] if r["demand_stats"] else "-"),
-                ("Last update", lambda r: r["last_update"] or "-")])
+                ("Last change", lambda r: r["last_update"] or "-")])
             print("Use one commodity for its series, or --csv / --json for every point.")
             return
-        bucket = d.get("bucket_minutes")
-        print(f"{d['commodity']} at {d['station']} ({d['system']}), last {d['days']} days, "
-              f"{d['updates']} updates" + (f", shown as {d['points']} buckets of {bucket} min" if bucket else ""))
+        bucket, resample = d.get("bucket_minutes"), d.get("resample_minutes")
+        shown = (f", shown as {d['points']} buckets of {bucket} min" if bucket else
+                 f", resampled every {resample} min ({d['points']} samples)" if resample else "")
+        print(f"{d['commodity']} at {d['station']} ({d['system']}), last {d['days']} days, {updates}, "
+              f"{d['rows']} stored rows [{d['history_mode']} mode]{shown}")
         for label, key in (("buy ", "buy_price_stats"), ("sell", "sell_price_stats")):
             if d[key]:
                 print(f"  {label}: min {fmt_cr(d[key]['min'])}  avg {fmt_cr(d[key]['avg'])}  max {fmt_cr(d[key]['max'])}")
@@ -304,17 +329,65 @@ def cmd_price_history(args, session):
                 print(f"  {label}: min {d[key]['min']:,}  avg {d[key]['avg']:,}  max {d[key]['max']:,}")
         money = lambda key: (lambda r: fmt_cr(r[key]) if r[key] else "-")
         if bucket:
-            table(d["series"], [("Bucket start", "ts"), ("Updates", "updates"), ("Buy avg", money("buy_avg")),
-                                ("Sell avg", money("sell_avg")), ("Mean", money("mean_avg")),
-                                ("Stock avg", "stock_avg"), ("Stock min-max", lambda r: f"{r['stock_min']}-{r['stock_max']}"),
+            table(d["series"], [("Bucket start", "ts"), ("Updates", "updates"), ("Changes", "changes"),
+                                ("Buy avg", money("buy_avg")), ("Sell avg", money("sell_avg")),
+                                ("Mean", money("mean_avg")), ("Stock avg", "stock_avg"),
+                                ("Stock min-max", lambda r: f"{r['stock_min']}-{r['stock_max']}"),
                                 ("Demand avg", "demand_avg"),
                                 ("Demand min-max", lambda r: f"{r['demand_min']}-{r['demand_max']}")])
+        elif resample:
+            table(d["series"], [("Time", "ts"), ("Buy", money("buy_price")), ("Stock", "stock"),
+                                ("Sell", money("sell_price")), ("Demand", "demand"), ("Updates", "updates"),
+                                ("Carried", lambda r: "yes" if r["carried"] else "")])
         else:
             table(d["series"], [("Time", "ts"), ("Buy", money("buy_price")), ("Stock", "stock"),
-                                ("Sell", money("sell_price")), ("Demand", "demand"), ("Mean", money("mean_price"))])
+                                ("Sell", money("sell_price")), ("Demand", "demand"), ("Mean", money("mean_price")),
+                                ("Listed", lambda r: "" if r["listed"] else "NO")])
     emit(args, queries.price_history(session, args.station, args.commodity, args.system, args.days,
-                                     args.bucket, args.max_points, args.all_commodities, args.max_commodities),
-         human, price_csv)
+                                     args.bucket, args.max_points, args.all_commodities, args.max_commodities,
+                                     args.resample), human, price_csv)
+
+
+def cmd_traffic(args, session):
+    def human(d):
+        if not d["found"]:
+            return not_found(f"Station '{d['station']}'" if "station" in d else f"System '{d['system']}'")
+        if d.get("ambiguous"):
+            return print("Multiple matches, pass --system.")
+        name = d.get("station") or d["system"]
+        print(f"{name}: {d['updates']} updates in the last {d['days']} days "
+              f"({d['updates_per_hour']}/hour over {d['observed_hours']} observed hours), "
+              f"{d['distinct_uploaders']} distinct uploaders, {d['changed']} history rows written")
+        if d.get("busiest_bucket"):
+            print(f"  busiest {d['bucket_minutes']}-minute bucket: {d['busiest_bucket']['ts']} "
+                  f"({d['busiest_bucket']['updates']} updates)")
+        if d.get("software"):
+            print("  software: " + ", ".join(f"{x['software']} ({x['updates']})" for x in d["software"]))
+        if d["blank_uploader_updates"]:
+            print(f"  {d['blank_uploader_updates']} updates had no uploader id")
+        table(d["series"], [("Bucket start", "ts"), ("Updates", "updates"), ("Uploaders", "distinct_uploaders"),
+                            ("Rows written", "changed")])
+    data = (queries.system_traffic(session, args.name, args.days, args.bucket, args.max_points) if args.systems
+            else queries.station_traffic(session, args.name, args.system, args.days, args.bucket, args.max_points))
+    emit(args, data, human, traffic_csv)
+
+
+def cmd_busiest(args, session):
+    def human(d):
+        rows = d.get("systems") if args.systems else d["stations"]
+        print(f"{d['total_updates']} updates in the last {d['days']} day(s)")
+        if args.systems:
+            table(rows, [("System", "system"), ("Updates", "updates"), ("Per hour", "updates_per_hour"),
+                         ("Uploaders", "distinct_uploaders"), ("Rows written", "faction_rows_written"),
+                         ("% of all", "share_of_all_updates_pct")])
+        else:
+            table(rows, [("Station", "station"), ("System", "system"),
+                         ("Carrier", lambda r: "yes" if r["is_carrier"] else ""), ("Updates", "updates"),
+                         ("Per hour", "updates_per_hour"), ("Uploaders", "distinct_uploaders"),
+                         ("Rows written", "price_rows_written"), ("% of all", "share_of_all_updates_pct")])
+    data = (queries.busiest_systems(session, args.days, args.limit) if args.systems
+            else queries.busiest_stations(session, args.days, args.limit, not args.no_carriers))
+    emit(args, data, human, busiest_csv)
 
 
 def cmd_activity(args, session):
@@ -324,7 +397,7 @@ def cmd_activity(args, session):
         if d.get("ambiguous"):
             return print("Multiple matches, pass --system.")
         print(f"{d['station']} ({d['system']}): {d['updates']} updates in the last {d['days']} days "
-              f"(history mode: {d['history_mode']})")
+              f"[{d['updates_source']}], {d['price_rows']} price rows stored (history mode: {d['history_mode']})")
         print(f"  {d['note']}")
         print(f"  first {d['first_update']}  last {d['last_update']}  current snapshot {d['current_snapshot_at']}")
         table(d["per_day"], [("Date", "date"), ("Updates", "updates")])
@@ -393,7 +466,7 @@ def build_parser():
         sp = sub.add_parser(name, help=help_, description=help_)
         sp.set_defaults(func=fn)
         sp.add_argument("--json", action="store_true", help="machine-readable JSON output")
-        if name in ("price-history", "factions", "timeline"):
+        if name in ("price-history", "factions", "timeline", "traffic", "busiest"):
             sp.add_argument("--csv", action="store_true", help="CSV on stdout (redirect to a file for charting)")
         if live_opt:
             sp.add_argument("--live", action="store_true", help="query EDSM if local data is missing or stale")
@@ -444,11 +517,25 @@ def build_parser():
     sp.add_argument("commodity", help="commodity name, comma-separated list, or 'all'")
     sp.add_argument("--all-commodities", action="store_true", help="with 'all': no cap on the number of commodities")
     sp.add_argument("--max-commodities", type=int, default=25, help="with 'all': cap (default 25, busiest first)")
+    sp.add_argument("--resample", type=int, metavar="MINUTES",
+                    help="evenly spaced samples, carrying the last known state forward")
     sp.add_argument("--system")
     sp.add_argument("--days", type=int, default=30)
     sp.add_argument("--bucket", type=int, metavar="MINUTES", help="summarise into buckets of this many minutes")
     sp.add_argument("--max-points", type=int, default=500,
                     help="auto-bucket when there are more rows than this (default 500; 0 = never)")
+    sp = add("traffic", cmd_traffic, "How often a station (or, with --systems, a system) is reported to EDDN")
+    sp.add_argument("name", help="station name / fleet carrier callsign (or a system name with --systems)")
+    sp.add_argument("--system", help="system of the station, if the name is ambiguous")
+    sp.add_argument("--systems", action="store_true", help="treat NAME as a system and show its faction-report traffic")
+    sp.add_argument("--days", type=int, default=7)
+    sp.add_argument("--bucket", type=int, default=60, metavar="MINUTES", help="bucket size (default 60)")
+    sp.add_argument("--max-points", type=int, default=500, help="widen buckets above this many (0 = never)")
+    sp = add("busiest", cmd_busiest, "Leaderboard of the most frequently reported stations (or --systems)")
+    sp.add_argument("--systems", action="store_true")
+    sp.add_argument("--days", type=int, default=1)
+    sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--no-carriers", action="store_true", help="exclude fleet carriers (stations only)")
     sp = add("activity", cmd_activity, "How many market updates are stored for a station, per day")
     sp.add_argument("station")
     sp.add_argument("--system")

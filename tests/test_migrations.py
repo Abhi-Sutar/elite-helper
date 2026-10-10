@@ -21,8 +21,8 @@ BAD_REVISION = '''
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0004"
-down_revision = "0003"
+revision = "0005"
+down_revision = "0004"
 branch_labels = None
 depends_on = None
 
@@ -54,7 +54,7 @@ class TmpDirTest(unittest.TestCase):
     def scratch_migrations(self, revision_src):
         loc = self.tmp / "migrations"
         shutil.copytree(migrate.SCRIPT_LOCATION, loc, ignore=shutil.ignore_patterns("__pycache__"))
-        (loc / "versions" / "0004_scratch.py").write_text(revision_src)
+        (loc / "versions" / "0005_scratch.py").write_text(revision_src)
         return loc
 
 
@@ -85,7 +85,7 @@ class MigrationTests(TmpDirTest):
         loc = self.scratch_migrations(GOOD_REVISION)
         with mock.patch.object(migrate, "SCRIPT_LOCATION", loc):
             migrate.upgrade(e, backup=False)
-        self.assertEqual(migrate.status(e)["state"], "ahead")  # real code only knows 0003
+        self.assertEqual(migrate.status(e)["state"], "ahead")  # real code only knows 0004
         with self.assertRaises(migrate.SchemaError):
             migrate.ensure_current(e)
 
@@ -97,7 +97,7 @@ class MigrationTests(TmpDirTest):
             with self.assertRaises(Exception):
                 migrate.upgrade(e, backup=False)
         self.assertNotIn("scratch", inspect(e).get_table_names())
-        self.assertEqual(migrate.current_revision(e), "0003")
+        self.assertEqual(migrate.current_revision(e), "0004")
 
     def test_upgrade_makes_backup_of_existing_db(self):
         e = self.engine()
@@ -105,7 +105,7 @@ class MigrationTests(TmpDirTest):
         loc = self.scratch_migrations(GOOD_REVISION)
         with mock.patch.object(migrate, "SCRIPT_LOCATION", loc):
             migrate.upgrade(e)
-        self.assertEqual(len(list(self.tmp.glob("t.sqlite.pre-0003-*.bak"))), 1)
+        self.assertEqual(len(list(self.tmp.glob("t.sqlite.pre-0004-*.bak"))), 1)
 
     def test_concurrent_upgraders_apply_once(self):
         """Separate processes (as in real life: listener + `migrate upgrade`) race; the revision applies once."""
@@ -126,7 +126,7 @@ class MigrationTests(TmpDirTest):
         self.assertEqual([p.returncode for p in procs], [0, 0, 0, 0], errs)
         e = self.engine("race.sqlite")
         with mock.patch.object(migrate, "SCRIPT_LOCATION", loc):
-            self.assertEqual(migrate.current_revision(e), "0004")
+            self.assertEqual(migrate.current_revision(e), "0005")
 
 
 class Revision0003Tests(TmpDirTest):
@@ -151,6 +151,30 @@ class Revision0003Tests(TmpDirTest):
         self.assertEqual((fh[0], fh[1], fh[2], fh[3]), (0.5, "Boom", None, None))
         self.assertTrue(fh[4])  # existing rows count as 'present'
         self.assertEqual(tuple(ph), (100, None, None, None))
+
+
+class Revision0004Tests(TmpDirTest):
+    def test_adds_event_tables_and_logged_at_and_keeps_rows(self):
+        e = self.engine()
+        migrate.upgrade(e, rev="0003", backup=False)
+        with e.begin() as c:
+            c.execute(text("INSERT INTO systems(id64, name, updated_at, source) VALUES (1, 'Sol', '2026-10-01 00:00:00', 'eddn')"))
+            c.execute(text("INSERT INTO factions(system_id64, name, influence, is_controlling, updated_at, source) "
+                           "VALUES (1, 'A', 0.5, 1, '2026-10-01 00:00:00', 'eddn')"))
+            c.execute(text("INSERT INTO markets(market_id, station, system_name, is_carrier, updated_at, source) "
+                           "VALUES (7, 'Hub', 'Sol', 0, '2026-10-01 00:00:00', 'eddn')"))
+            c.execute(text("INSERT INTO commodities(id, symbol) VALUES (1, 'gold')"))
+            c.execute(text("INSERT INTO commodity_prices(market_id, commodity_id, buy_price) VALUES (7, 1, 100)"))
+        migrate.upgrade(e, backup=False)
+        names = set(inspect(e).get_table_names())
+        self.assertTrue({"market_update", "system_update"} <= names)
+        with e.connect() as c:
+            price = c.execute(text("SELECT buy_price, logged_at, seen_at FROM commodity_prices")).one()
+            fac = c.execute(text("SELECT influence, logged_at FROM factions")).one()
+            self.assertEqual(c.execute(text("SELECT count(*) FROM market_update")).scalar(), 0)
+        self.assertEqual(tuple(price)[:2], (100, None))   # logged_at NULL = an anchor row is due at the next update
+        self.assertIsNotNone(price[2])                    # seen_at is back-filled from the market's last update
+        self.assertEqual(tuple(fac), (0.5, None))
 
 
 class LegacyImportTests(TmpDirTest):

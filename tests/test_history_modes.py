@@ -75,13 +75,13 @@ class FullHistoryTests(unittest.TestCase):
         self.assertFalse(self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * 40))))
         self.assertEqual(self.count_history(), 0)
 
-    def test_snapshot_drops_commodities_that_disappear(self):
+    def test_a_partial_message_does_not_remove_other_commodities_from_the_snapshot(self):
         self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0), ("tea", 2, 2, 0, 0)], when=ts(3)))
         self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 5, 1, 0, 0)], when=ts(2)))
         snap = queries.station_market(self.s, "hub")["commodities"]
-        self.assertEqual([(c["commodity"], c["buy_price"]) for c in snap], [("gold", 5)])
-        # history still has every observation
-        self.assertEqual(self.count_history(), 3)
+        self.assertEqual([(c["commodity"], c["buy_price"], c["stale"]) for c in snap],
+                         [("gold", 5, False), ("tea", 2, False)])
+        self.assertEqual(self.count_history(), 3)  # every reading is still in the history
 
     def test_activity_counts_distinct_updates(self):
         for h in (30, 29, 28):
@@ -106,13 +106,15 @@ class FullHistoryTests(unittest.TestCase):
 
 
 class ModeSelectionTests(unittest.TestCase):
-    def test_default_is_thresholded_on_sqlite_and_env_overrides(self):
+    def test_default_is_changes_and_env_overrides(self):
         engine = database.make_engine("sqlite://")
         with mock.patch.dict(os.environ, clear=False):
             os.environ.pop(store.HISTORY_MODE_ENV, None)
-            self.assertEqual(store.history_mode(engine), "thresholded")
+            self.assertEqual(store.history_mode(engine), "changes")
             os.environ[store.HISTORY_MODE_ENV] = "full"
             self.assertEqual(store.history_mode(engine), "full")
+            os.environ[store.HISTORY_MODE_ENV] = "thresholded"
+            self.assertEqual(store.history_mode(engine), "thresholded")
             os.environ[store.HISTORY_MODE_ENV] = "bogus"
             with self.assertRaises(ValueError):
                 store.history_mode(engine)

@@ -84,17 +84,45 @@ def station_market(station: str, system: str | None = None, live_lookup: bool = 
 @mcp.tool()
 def price_history(station: str, commodity: str, system: str | None = None, days: int = 30,
                   bucket_minutes: int | None = None, max_points: int = 500,
-                  all_commodities: bool = False, max_commodities: int = 25) -> dict:
+                  all_commodities: bool = False, max_commodities: int = 25,
+                  resample_minutes: int | None = None) -> dict:
     """
     Price and amount time series at a station (fleet carriers by callsign). commodity is one name, a comma
     list, or 'all' (busiest first, capped at max_commodities unless all_commodities=True). Each point has
     buy_price (station sells; needs stock), sell_price (station buys; needs demand; 0 = side inactive),
-    mean_price (galactic average), stock (supply), demand and their brackets. Kept 30 days. Series longer than
-    max_points are summarised into time buckets with min/avg/max of prices, stock and demand;
-    pass bucket_minutes to choose the bucket size.
+    mean_price (galactic average), stock (supply), demand and their brackets. Kept 30 days.
+    Stored rows are change points (the value at any time is the latest row at or before it; state_at_start gives the
+    state when the window opens); `updates` is the true number of EDDN updates and `rows` the stored change rows.
+    Series longer than max_points are summarised into time buckets with min/avg/max of prices, stock and demand
+    (pass bucket_minutes to choose the size); resample_minutes gives evenly spaced samples carrying the last state
+    forward, each with the number of updates in that step.
     """
     return _run(queries.price_history, station, commodity, system, days, bucket_minutes, max_points,
-                all_commodities, max_commodities)
+                all_commodities, max_commodities, resample_minutes)
+
+
+@mcp.tool()
+def station_traffic(station: str, system: str | None = None, days: int = 7, bucket_minutes: int = 60) -> dict:
+    """How often a station (or fleet carrier callsign) is reported to EDDN: updates and distinct uploaders per time bucket, updates per hour, busiest period."""
+    return _run(queries.station_traffic, station, system, days, bucket_minutes)
+
+
+@mcp.tool()
+def system_traffic(system: str, days: int = 7, bucket_minutes: int = 60) -> dict:
+    """How often a system's factions are reported to EDDN (journal messages with faction data), per time bucket."""
+    return _run(queries.system_traffic, system, days, bucket_minutes)
+
+
+@mcp.tool()
+def busiest_stations(days: int = 1, limit: int = 20, include_carriers: bool = True) -> dict:
+    """Leaderboard of the most frequently reported stations: updates, updates per hour, distinct uploaders, price rows written, share of all updates."""
+    return _run(queries.busiest_stations, days, limit, include_carriers)
+
+
+@mcp.tool()
+def busiest_systems(days: int = 1, limit: int = 20) -> dict:
+    """Leaderboard of systems whose factions are reported most often to EDDN."""
+    return _run(queries.busiest_systems, days, limit)
 
 
 @mcp.tool()

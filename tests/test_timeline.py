@@ -244,8 +244,8 @@ class PriceSeriesTests(ModeCase):
         self.feed_station([(3, [("gold", 1, 1, 0, 0), ("tea", 2, 2, 0, 0)]), (2, [("gold", 1, 1, 0, 0)])])
         d = queries.price_history(self.s, "Hub", "Gold, Tea, nosuchthing", max_points=0)
         self.assertEqual(sorted(d["series_by_commodity"]), ["gold", "nosuchthing", "tea"])
-        self.assertEqual((d["series_by_commodity"]["gold"]["updates"], d["series_by_commodity"]["tea"]["updates"],
-                          d["series_by_commodity"]["nosuchthing"]["updates"]), (2, 1, 0))
+        self.assertEqual((d["series_by_commodity"]["gold"]["rows"], d["series_by_commodity"]["tea"]["rows"],
+                          d["series_by_commodity"]["nosuchthing"]["rows"]), (2, 1, 0))
 
     def test_all_commodities_is_capped_unless_lifted(self):
         items = [(f"item{i:02d}", 10, 10, 0, 0) for i in range(30)]

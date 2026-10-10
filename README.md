@@ -13,11 +13,12 @@ EDDN is a live firehose with no history, so a background **listener** subscribes
 PostgreSQL/TimescaleDB later — the code is SQLAlchemy 2.0 + Alembic and switches by changing the DB URL):
 
 - `commodity/3` messages → station markets (buy/sell price, stock, demand, age)
-- `journal/1` `FSDJump` / `Location` / `CarrierJump` → system info, faction influence, states, conflicts,
-  plus a change-only influence history
-- Commodity prices also form a **time series** (`price_history`): a row is added when a price moves 5%+ or
-  stock/demand 25%+, at most once an hour per commodity per station. Commodity data older than 30 days is
-  pruned hourly by the listener (or `prune`).
+- `journal/1` `FSDJump` / `Location` / `CarrierJump` → system info, faction influence, states, conflicts
+- **Every accepted message is one row in an update log** (`market_update`, `system_update`: who, when, how many
+  items, how many history rows it produced) = the exact **traffic** of each station and system.
+- The **time series** (`price_history`, `faction_history`) stores a row only when something differs from the last
+  logged state (see "History mode"), so nothing is lost but identical re-uploads are not stored 180 times.
+  Commodity data older than 30 days (faction history 1 year, update log 1 year) is pruned by the listener or `prune`.
 
 Every query result carries the **age** of its data. `--live` (CLI) / `live_lookup` (MCP) fetches a system or
 station from [EDSM](https://www.edsm.net) when local data is missing or stale.
@@ -46,7 +47,11 @@ python -m eddn_helper faction "Mother Gaia"                              # every
 python -m eddn_helper market Daedalus --system Sol [--live]
 python -m eddn_helper price-history Daedalus gold --system Sol --days 14 [--bucket 60] [--csv]
 python -m eddn_helper price-history N0B-T4X all --days 7 --csv > carrier.csv   # every commodity at a station
-python -m eddn_helper activity N0B-T4X                  # how many updates are stored for a station, per day
+python -m eddn_helper price-history N0B-T4X gold --resample 60            # evenly spaced, last state carried forward
+python -m eddn_helper traffic N0B-T4X --days 7 [--bucket 60] [--csv]      # how often a station is reported
+python -m eddn_helper traffic Sol --systems                               # ... or a system's faction reports
+python -m eddn_helper busiest [--days 1] [--limit 20] [--no-carriers] [--systems]   # who is reported most
+python -m eddn_helper activity N0B-T4X                  # updates per day for a station (from the update log)
 python -m eddn_helper commodity gold --sell --near Sol --ly 100 [--min-amount 500] [--no-carriers]
 python -m eddn_helper commodity "liquid oxygen" --buy --limit 5
 python -m eddn_helper trades Sol --ly 40 --cargo 256
@@ -59,35 +64,49 @@ Terms: `Buy` is what you pay the station (needs stock); `Sell` is what the stati
 
 | What | Command / MCP tool | Each point has |
 |---|---|---|
-| Price + amount of commodities at a station | `price-history <station> <commodity\|a,b\|all>` / `price_history` | `buy_price` (station sells; needs stock), `sell_price` (station buys; needs demand), `mean_price` (galactic average), `stock` (supply), `demand`, `stock_bracket`, `demand_bracket` |
+| Price + amount of commodities at a station | `price-history <station> <commodity\|a,b\|all>` / `price_history` | `buy_price` (station sells; needs stock), `sell_price` (station buys; needs demand), `mean_price` (galactic average), `stock` (supply), `demand`, `stock_bracket`, `demand_bracket`, `listed` |
+| How often a station / system is reported | `traffic <name>` / `station_traffic`, `system_traffic`; `busiest` / `busiest_stations`, `busiest_systems` | updates, distinct uploaders, price/faction rows written, per time bucket; leaderboards with share of all updates |
 | A faction in a system, observation by observation | `factions <system> --history N` / `faction_history` | influence %, main state, happiness, active / pending / recovering states (pending/recovering with the game's trend), `present` |
 | The same, as chart-ready intervals | `timeline <system> <faction>` / `faction_timeline` | influence series + intervals `{field, value, trend, start, last_seen, ended_at}` |
 | Which systems a faction is in | `faction <name>` / `faction_presence` | influence, state, `history_rows`, `first_seen` per system |
 
 Notes: a price of `0` means that side of the market is inactive (`--csv` leaves it empty so charts do not plot
-zeros); stock and demand of `0` are real values. Series longer than `--max-points` come back summarised in time
-buckets with min/avg/max of prices, stock and demand; `--bucket MINUTES` picks the size and `--csv` exports every
-point. Timeline intervals start at the first observation in the window and end at the first observation where the
-value is gone (`ended_at`, empty while still present); a `present=false` row means the faction left the system.
+zeros); stock and demand of `0` are real values; `listed: false` marks a point where the commodity was no longer on
+sale (or `stale: true`, see below). In the default `changes` mode stored rows are **change points**: the value at any time is the latest row at
+or before it (`state_at_start` gives the state when the window opens), `updates` is the true number of EDDN updates
+(from the update log) and `rows` the number of stored change rows. `--resample MINUTES` gives evenly spaced samples
+with the last state carried forward (and the updates in each step); series longer than `--max-points` are summarised
+into time buckets with min/avg/max of prices, stock and demand; `--bucket MINUTES` picks the size and `--csv`
+exports every point. Timeline intervals start at the stored row where a value appeared and end at the row where it
+is gone (`ended_at`, empty while still present); `last_seen` comes from the update log; a `present=false` row means
+the faction left the system.
 
 Retention: market history 30 days; faction history 1 year; current snapshots always replaced in place. History starts
 when the listener first saw a station or system (EDDN keeps nothing), and rows written before the 0003 migration
 have no mean price, brackets, happiness or state lists.
 
-## History mode: thresholded vs full
+## History mode: changes (default) / full / thresholded
 
-`price_history` is written in one of two modes (`ELITE_HELPER_HISTORY_MODE`, default by database):
+`ELITE_HELPER_HISTORY_MODE` selects how `price_history` and `faction_history` are written. The update log
+(`market_update`, `system_update`) is written in every mode.
 
-- `thresholded` (default on SQLite): a row only when a price moves 5%+ or stock/demand 25%+, at most once an
-  hour per commodity per station (factions: when influence, state, happiness or a state list changes). Small, but
-  not every update.
-- `full` (default on PostgreSQL): one row per commodity for **every** accepted market update, kept 30 days.
-  That is roughly 40 million rows a day at current EDDN volume, so it is meant for PostgreSQL + TimescaleDB
-  (hypertable + compression + retention policy), not SQLite. A late upload that is older than the current
-  snapshot still goes into the history but does not overwrite the snapshot.
+- `changes` (**default**): a row only when the commodity/faction is new, a value differs from the last logged
+  state (price, sell price, stock, demand, mean price, brackets; faction influence, state, happiness, any state
+  or trend), a faction left (a `present=false` row), or an **anchor** is due (nothing logged for 24 h,
+  `ELITE_HELPER_ANCHOR_HOURS`, 0 = off), so every window has a starting state even though old rows are pruned.
+  Lossless: nothing about the state over time is missing, and every update time is in the update log. A message
+  older than the current snapshot (a late upload) only adds to the update log.
+  **Partial reports:** EDDN uploads are not always complete - the same station was seen reported with 368
+  commodities by most uploaders and with 4 by another - so a commodity missing from one message is never treated
+  as gone. The snapshot keeps it, each snapshot row has `seen_at` (last message containing it) and readers judge
+  freshness per commodity; resampled series mark a state `stale` once it is older than 36 h (anchors refresh live
+  items daily) instead of carrying it forward forever.
+- `full`: a row for every reading. Roughly 40 million rows a day at current EDDN volume - PostgreSQL/Timescale
+  only. A late upload is still logged but does not overwrite the snapshot.
+- `thresholded` (legacy): only meaningful changes (5% price, 25% amount), at most hourly.
 
-Long series are summarised into time buckets (min/avg/max, last stock/demand) once they exceed `--max-points`
-(default 500) so replies stay small; `--bucket MINUTES` picks the size.
+Why `changes`: in a 20-minute measurement 59% of price rows were exact repeats of the previous reading and only
+about 1% of follow-up readings differed; a single busy station was re-reported every ~2 seconds.
 
 ## PostgreSQL + TimescaleDB setup (Windows)
 
