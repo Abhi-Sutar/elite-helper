@@ -29,7 +29,44 @@ INCOME STREAMS COVERED
                          is counted, since commodity reward value depends on
                          where you sell it)
   - Exploration data:   SellExplorationData / MultiSellExplorationData
+  - Fleet carrier (your own transfers, exact):
+                         CarrierBuy (purchase cost), CarrierDecommission (sale
+                         refund), CarrierBankTransfer (Deposit/Withdraw between
+                         your personal wallet and the carrier's own bank,
+                         counted as spent/earned respectively since that's
+                         money leaving/entering your wallet balance).
+  - Fleet carrier market (approximate):
+                         The journal has NO per-transaction event for other
+                         commanders/NPCs buying from or selling to your
+                         carrier's trade orders -- that activity is invisible
+                         to a journal-only tool. The only proxy available is
+                         the carrier's bank balance, reported as a snapshot in
+                         CarrierStats/CarrierFinance each time you open
+                         carrier management in-game. This stream diffs
+                         consecutive balance snapshots per carrier, subtracts
+                         out any CarrierBankTransfer Deposit/Withdraw that
+                         happened in between (so your own transfers aren't
+                         double-counted), and reports the remainder as
+                         "carrier_market" earned/spent. This necessarily also
+                         absorbs weekly carrier upkeep deductions and the
+                         carrier's own buy-order spending, since the journal
+                         doesn't separate those from sale revenue -- treat it
+                         as "net carrier balance movement you didn't cause
+                         directly", not pure sales income. Resolution is only
+                         as fine as how often you open carrier management.
   - Trade profit is computed as spend vs earn per commodity, same as v1.
+
+EXPENSE STREAMS (counted as "spent", so they reduce net profit / credits/hour)
+  - Maintenance:        Repair, RepairAll, AFMURepairs (repair), RefuelAll,
+                         RefuelPartial (refuel), BuyAmmo (rearm), BuyDrones
+                         (limpets), RestockVehicle (SRV/fighter restock).
+                         A per-kind breakdown (repair/refuel/rearm/...) is
+                         printed after the stream table.
+  - Rebuys:             Resurrected (the insurance rebuy Cost after your ship
+                         is destroyed). Reported as its own stream so the
+                         balance sheet shows what dying cost you.
+  - Crew wages:         NpcCrewPaidWage (Amount). Use --crew-wages to also
+                         print the total paid out per crew member.
 
 Journal event schema reference: the community-maintained journal manual
 (https://github.com/EDCD/EliteDangerous.Journal.Manual) and EDDiscovery's
@@ -47,7 +84,8 @@ Usage:
   python ed_credit_rate.py --file Journal.xxx.log
   python ed_credit_rate.py --since 2026-09-01T00:00:00
   python ed_credit_rate.py --max-gap-minutes 20
-  python ed_credit_rate.py --streams trading,bounty
+  python ed_credit_rate.py --streams trading,bounty,carrier,carrier_market
+  python ed_credit_rate.py --session          # only the most recent journal file
 """
 
 import argparse
@@ -58,7 +96,21 @@ import sys
 from datetime import datetime, timezone
 
 
-ALL_STREAMS = ("trading", "bounty", "mission", "exploration")
+ALL_STREAMS = ("trading", "bounty", "mission", "exploration", "carrier", "carrier_market",
+               "maintenance", "rebuy", "crew_wages")
+
+
+# Journal event -> (maintenance kind, cost field)
+MAINTENANCE_EVENTS = {
+    "Repair": ("repair", "Cost"),
+    "RepairAll": ("repair", "Cost"),
+    "AFMURepairs": ("repair", "Cost"),
+    "RefuelAll": ("refuel", "Cost"),
+    "RefuelPartial": ("refuel", "Cost"),
+    "BuyAmmo": ("rearm", "Cost"),
+    "BuyDrones": ("limpets", "TotalCost"),
+    "RestockVehicle": ("restock", "Cost"),
+}
 
 
 def default_journal_dir():
@@ -122,17 +174,53 @@ def session_playtime_seconds(events, max_gap_minutes=None):
     return total
 
 
-def process_income_events(events, streams):
+def process_income_events(events, streams, carrier_state):
     """
     Walk one session's events and extract income-relevant activity.
     Returns a dict of stream -> {"earned":..., "spent":..., "count":...}
-    and a per_commodity dict for the trading stream specifically.
+    a per_commodity dict for the trading stream, and a maintenance dict
+    (kind -> {"spent","count"}) breaking down the maintenance stream, and a
+    crew dict (crew name -> {"spent","count"}) of wages paid per crew member.
+
+    carrier_state is a dict of CarrierID -> {"balance": last seen
+    CarrierBalance or None, "transfer_since_last": net Deposit-Withdraw since
+    that snapshot}, mutated in place and expected to be threaded across
+    successive calls (one per journal file, in chronological order) so the
+    carrier_market stream can diff balance snapshots across sessions.
     """
     result = {s: {"earned": 0, "spent": 0, "count": 0} for s in ALL_STREAMS}
     per_commodity = {}
+    maintenance = {}
+    crew = {}
 
     for _, e in events:
         ev = e.get("event")
+
+        if ev in MAINTENANCE_EVENTS and "maintenance" in streams:
+            kind, field = MAINTENANCE_EVENTS[ev]
+            cost = e.get(field, 0) or 0
+            result["maintenance"]["spent"] += cost
+            result["maintenance"]["count"] += 1
+            m = maintenance.setdefault(kind, {"spent": 0, "count": 0})
+            m["spent"] += cost
+            m["count"] += 1
+            continue
+
+        if ev == "NpcCrewPaidWage" and "crew_wages" in streams:
+            amount = e.get("Amount", 0) or 0
+            name = e.get("NpcCrewName") or str(e.get("NpcCrewId", "unknown"))
+            result["crew_wages"]["spent"] += amount
+            result["crew_wages"]["count"] += 1
+            c = crew.setdefault(name, {"spent": 0, "count": 0})
+            c["spent"] += amount
+            c["count"] += 1
+            continue
+
+        if ev == "Resurrected" and "rebuy" in streams:
+            # Cost is 0 when you chose to rebuy while bankrupt / recovered via other options.
+            result["rebuy"]["spent"] += e.get("Cost", 0) or 0
+            result["rebuy"]["count"] += 1
+            continue
 
         if ev == "MarketBuy" and "trading" in streams:
             cost = e.get("TotalCost", 0)
@@ -182,7 +270,52 @@ def process_income_events(events, streams):
             result["exploration"]["earned"] += total or 0
             result["exploration"]["count"] += 1
 
-    return result, per_commodity
+        elif ev == "CarrierBuy" and "carrier" in streams:
+            # Field is "Price" in the real journal (older docs say "Cost").
+            result["carrier"]["spent"] += e.get("Price", e.get("Cost", 0))
+            result["carrier"]["count"] += 1
+
+        elif ev == "CarrierDecommission" and "carrier" in streams:
+            # Field naming for the refund varies across journal manual versions.
+            result["carrier"]["earned"] += e.get("Refund", e.get("ScrapRefund", 0))
+            result["carrier"]["count"] += 1
+
+        elif ev == "CarrierBankTransfer" and ("carrier" in streams or "carrier_market" in streams):
+            # Deposit/Withdraw are the amount fields directly (no separate Direction field).
+            deposit = e.get("Deposit", 0)
+            withdraw = e.get("Withdraw", 0)
+            if "carrier" in streams:
+                result["carrier"]["spent"] += deposit
+                result["carrier"]["earned"] += withdraw
+                result["carrier"]["count"] += 1
+            if "carrier_market" in streams:
+                cid = e.get("CarrierID")
+                if cid is not None:
+                    st = carrier_state.setdefault(cid, {"balance": None, "transfer_since_last": 0})
+                    st["transfer_since_last"] += deposit - withdraw
+
+        elif ev in ("CarrierStats", "CarrierFinance") and "carrier_market" in streams:
+            cid = e.get("CarrierID")
+            if ev == "CarrierStats":
+                balance = e.get("Finance", {}).get("CarrierBalance")
+            else:
+                balance = e.get("CarrierBalance")
+            if cid is not None and balance is not None:
+                st = carrier_state.setdefault(cid, {"balance": None, "transfer_since_last": 0})
+                if st["balance"] is not None:
+                    # Net change not explained by your own deposits/withdrawals since the
+                    # last snapshot -- the only journal-visible proxy for carrier market
+                    # activity (also absorbs weekly upkeep, see module docstring).
+                    market_delta = (balance - st["balance"]) - st["transfer_since_last"]
+                    if market_delta > 0:
+                        result["carrier_market"]["earned"] += market_delta
+                    else:
+                        result["carrier_market"]["spent"] += -market_delta
+                    result["carrier_market"]["count"] += 1
+                st["balance"] = balance
+                st["transfer_since_last"] = 0
+
+    return result, per_commodity, maintenance, crew
 
 
 def fmt_cr(value):
@@ -196,8 +329,14 @@ def main():
     parser.add_argument("--since", help="Only count sessions/files with events after this UTC timestamp, format YYYY-MM-DDTHH:MM:SS")
     parser.add_argument("--max-gap-minutes", type=float, default=None,
                          help="Treat any in-session gap longer than this as non-playtime (e.g. AFK). Default: no gap filtering.")
-    parser.add_argument("--streams", default="trading,bounty,mission,exploration",
-                         help="Comma-separated list of income streams to include: trading,bounty,mission,exploration")
+    parser.add_argument("--streams", default="trading,bounty,mission,exploration,carrier,carrier_market,maintenance,rebuy,crew_wages",
+                         help="Comma-separated list of income streams to include: "
+                              "trading,bounty,mission,exploration,carrier,carrier_market,"
+                              "maintenance,rebuy,crew_wages")
+    parser.add_argument("--crew-wages", action="store_true",
+                         help="Also print total wages paid out per NPC crew member")
+    parser.add_argument("--session", action="store_true",
+                         help="Only use the single most recent journal file (i.e. just your last play session), instead of all files found")
     args = parser.parse_args()
 
     streams = set(s.strip() for s in args.streams.split(","))
@@ -215,6 +354,8 @@ def main():
             print(f"No journal files found in: {directory}", file=sys.stderr)
             print("Pass --dir or --file explicitly if your journals live elsewhere.", file=sys.stderr)
             sys.exit(1)
+        if args.session:
+            files = [files[-1]]  # filenames sort chronologically, last one is most recent
 
     since_dt = None
     if args.since:
@@ -223,9 +364,14 @@ def main():
     total_playtime_seconds = 0.0
     grand_totals = {s: {"earned": 0, "spent": 0, "count": 0} for s in ALL_STREAMS}
     grand_per_commodity = {}
+    grand_maintenance = {}
+    grand_crew = {}
     sessions_used = 0
     earliest = None
     latest = None
+    # Carrier balance persists across sessions (unlike playtime), so this state
+    # is threaded across the whole file loop below, in chronological order.
+    carrier_state = {}
 
     for path in files:
         events = load_file_events(path)
@@ -241,11 +387,21 @@ def main():
 
         total_playtime_seconds += session_playtime_seconds(events, args.max_gap_minutes)
 
-        session_income, per_commodity = process_income_events(events, streams)
+        session_income, per_commodity, maintenance, crew = process_income_events(events, streams, carrier_state)
         for s in ALL_STREAMS:
             grand_totals[s]["earned"] += session_income[s]["earned"]
             grand_totals[s]["spent"] += session_income[s]["spent"]
             grand_totals[s]["count"] += session_income[s]["count"]
+
+        for kind, d in maintenance.items():
+            gm = grand_maintenance.setdefault(kind, {"spent": 0, "count": 0})
+            gm["spent"] += d["spent"]
+            gm["count"] += d["count"]
+
+        for name, d in crew.items():
+            gcw = grand_crew.setdefault(name, {"spent": 0, "count": 0})
+            gcw["spent"] += d["spent"]
+            gcw["count"] += d["count"]
 
         for commodity, d in per_commodity.items():
             gc = grand_per_commodity.setdefault(commodity, {"bought": 0, "spent": 0, "sold": 0, "earned": 0})
@@ -277,6 +433,19 @@ def main():
         net = d["earned"] - d["spent"]
         print(f"  {s:<12} count={d['count']:>5}  earned={fmt_cr(d['earned']):>18}  "
               f"spent={fmt_cr(d['spent']):>18}  net={fmt_cr(net):>18}")
+    if grand_maintenance:
+        print()
+        print("Maintenance breakdown:")
+        for kind, d in sorted(grand_maintenance.items(), key=lambda kv: kv[1]["spent"], reverse=True):
+            print(f"  {kind:<12} count={d['count']:>5}  spent={fmt_cr(d['spent']):>18}")
+    if args.crew_wages:
+        print()
+        print("Crew wages paid per crew member:")
+        if grand_crew:
+            for name, d in sorted(grand_crew.items(), key=lambda kv: kv[1]["spent"], reverse=True):
+                print(f"  {name:<20} payments={d['count']:>5}  paid={fmt_cr(d['spent']):>18}")
+        else:
+            print("  (no NpcCrewPaidWage events found)")
     print()
     print(f"Total earned:  {fmt_cr(total_earned)}")
     print(f"Total spent:   {fmt_cr(total_spent)}")
