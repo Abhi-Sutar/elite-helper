@@ -1,1 +1,128 @@
 # elite-helper
+
+Elite Dangerous helper scripts.
+
+- `ed_credit_rate.py` — credits/hour from your local journal files (stdlib only).
+- `eddn_helper/` — Inara-style **commodity prices** and **system faction states** collected live from
+  [EDDN](https://github.com/EDCD/EDDN), with a command-line tool and an MCP server so Claude can query it.
+
+## How it works
+
+EDDN is a live firehose with no history, so a background **listener** subscribes to
+`tcp://eddn.edcd.io:9500` and stores what players' game clients upload into a database (SQLite today,
+PostgreSQL/TimescaleDB later — the code is SQLAlchemy 2.0 + Alembic and switches by changing the DB URL):
+
+- `commodity/3` messages → station markets (buy/sell price, stock, demand, age)
+- `journal/1` `FSDJump` / `Location` / `CarrierJump` → system info, faction influence, states, conflicts,
+  plus a change-only influence history
+- Commodity prices also form a **time series** (`price_history`): a row is added when a price moves 5%+ or
+  stock/demand 25%+, at most once an hour per commodity per station. Commodity data older than 30 days is
+  pruned hourly by the listener (or `prune`).
+
+Every query result carries the **age** of its data. `--live` (CLI) / `live_lookup` (MCP) fetches a system or
+station from [EDSM](https://www.edsm.net) when local data is missing or stale.
+
+## Setup (uv)
+
+```
+uv sync                                   # creates .venv from pyproject.toml / uv.lock
+.venv\Scripts\python.exe -m eddn_helper listen
+```
+
+Database location: `--db <url-or-path>`, else `ELITE_HELPER_DATABASE_URL`, else
+`%LOCALAPPDATA%\elite-helper\elite.sqlite`. Only one listener can run per database (OS file lock next to
+the database); a second one exits with the first one's PID.
+
+## CLI
+
+All commands accept `--json`.
+
+```
+python -m eddn_helper status
+python -m eddn_helper system Sol [--live]
+python -m eddn_helper factions Sol --history 14 [--faction "Mother Gaia"]
+python -m eddn_helper faction "Mother Gaia"
+python -m eddn_helper market Daedalus --system Sol [--live]
+python -m eddn_helper price-history Daedalus gold --system Sol --days 14
+python -m eddn_helper commodity gold --sell --near Sol --ly 100 [--min-amount 500] [--no-carriers]
+python -m eddn_helper commodity "liquid oxygen" --buy --limit 5
+python -m eddn_helper trades Sol --ly 40 --cargo 256
+python -m eddn_helper prune --days 30
+```
+
+Terms: `Buy` is what you pay the station (needs stock); `Sell` is what the station pays you (needs demand).
+
+## Database schema and migrations (Alembic)
+
+`eddn_helper/models.py` is the schema source of truth; revisions live in `eddn_helper/migrations/versions`.
+
+```
+python -m eddn_helper migrate status          # current vs head revision
+python -m eddn_helper migrate upgrade         # apply pending revisions (SQLite is backed up first)
+python -m eddn_helper migrate new "add foo"   # development: autogenerate a revision from the models
+python -m eddn_helper backup C:\temp\copy.sqlite
+```
+
+- Only `listen` (at start-up) and `migrate upgrade` change the schema. CLI/MCP reads refuse to run against a
+  database whose schema is behind or ahead of the code and tell you what to do.
+- A migration runs in one transaction (rolls back fully on failure) and concurrent upgraders serialise.
+- Large rebuilds lock the database for writes; stop the listener first for those.
+- Import data from the old pre-SQLAlchemy file (`eddn.sqlite`): `python -m eddn_helper import-legacy [--from <file>]`.
+
+## Developing while the listener runs
+
+Python loads code once at start, so editing files never changes a running listener. Recommended setup:
+
+```
+git worktree add ..\elite-helper-live -b live main
+cd ..\elite-helper-live ; uv sync            # the live listener runs from this folder
+```
+
+- `.\scripts\dev.ps1 snapshot` — consistent copy of the live DB into `%TEMP%\eddn_dev.sqlite` for experiments.
+- `.\scripts\dev.ps1 listen` — second listener on the dev copy (EDDN allows many subscribers).
+- `.\scripts\dev.ps1 test` — unit tests.
+- `.\scripts\deploy.ps1` — tests → fast-forward the live worktree to `main` → `uv sync` → restart the task.
+
+## Start at boot (Task Scheduler)
+
+From an **elevated** PowerShell, once:
+
+```
+.\scripts\install-task.ps1          # task EliteHelperListener, at startup, runs as you without a stored password
+Start-ScheduledTask -TaskName EliteHelperListener
+```
+
+Logs: `%LOCALAPPDATA%\elite-helper\listener.log` (rotating). `restart-task.ps1` and `uninstall-task.ps1` are
+alongside. The listener retries the database for up to 5 minutes at start-up, restarts automatically if it
+dies, and reconnects after ~90 s of silence (e.g. after sleep). Sleep/hibernate still pauses collection.
+
+## MCP server (Claude Desktop / Cowork)
+
+```json
+{
+  "mcpServers": {
+    "elite-helper": {
+      "command": "C:\\path\\to\\elite-helper-live\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "eddn_helper.mcp_server"],
+      "cwd": "C:\\path\\to\\elite-helper-live",
+      "env": { "ELITE_HELPER_DATABASE_URL": "sqlite:///C:/Users/<you>/AppData/Local/elite-helper/elite.sqlite" }
+    }
+  }
+}
+```
+
+Tools: `data_status`, `system_info`, `faction_history`, `faction_presence`, `station_market`,
+`price_history`, `find_commodity`, `best_trades`. The listener must be running separately.
+For Claude Code, the plain CLI above works as-is through the shell.
+
+## Limitations
+
+- Only systems/stations that players visited while the listener ran are present (use `--live` to fill gaps).
+- EDDN commodity data has no pad size, and distances need the system's coordinates to be known.
+- Faction state names from EDDN have no spaces (`PublicHoliday`); EDSM's have (`Public Holiday`).
+
+## Tests
+
+```
+.venv\Scripts\python.exe -m unittest discover tests
+```
