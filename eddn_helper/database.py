@@ -39,8 +39,10 @@ def make_engine(url=None, **kwargs):
         else:  # in-memory: one shared connection so every session sees the same database
             kwargs.setdefault("poolclass", StaticPool)
         kwargs.setdefault("connect_args", {"timeout": 30, "check_same_thread": False})
-    elif u.get_backend_name() == "postgresql" and u.drivername == "postgresql":
-        url = str(u.set(drivername="postgresql+psycopg"))  # prefer psycopg 3
+    elif u.get_backend_name() == "postgresql":
+        if u.drivername == "postgresql":
+            url = str(u.set(drivername="postgresql+psycopg"))  # prefer psycopg 3
+        kwargs.setdefault("pool_pre_ping", True)  # survive a restarted database service
     engine = create_engine(url, **kwargs)
     if engine.dialect.name == "sqlite":
         # Take transaction control from pysqlite so DDL is transactional and BEGIN IMMEDIATE is possible.

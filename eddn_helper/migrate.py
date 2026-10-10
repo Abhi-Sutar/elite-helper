@@ -13,7 +13,7 @@ from sqlalchemy import inspect
 from . import config as app_config
 
 # Revision the code expects. tests/test_migrations.py asserts this equals Alembic's real head.
-SCHEMA_HEAD = "0001"
+SCHEMA_HEAD = "0004"
 SCRIPT_LOCATION = Path(__file__).parent / "migrations"  # tests point this at a scratch copy
 
 
