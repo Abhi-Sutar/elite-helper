@@ -72,7 +72,7 @@ def run(db_url=None, relay=RELAY, log_file=None, stats_every_s=60):
 
     setup_logging(log_file)
     url = config.database_url(db_url)
-    lock = ListenerLock(config.runtime_dir(url) / "listener.lock")
+    lock = ListenerLock(config.lock_path(url))
     if not lock.acquire():
         _, pid = holder(lock.path)
         log.error("another listener is already running (pid %s) for %s", pid, database.masked_url(url))
@@ -91,7 +91,10 @@ def run(db_url=None, relay=RELAY, log_file=None, stats_every_s=60):
     ctx = zmq.Context()
     sock = None
     backoff = 1
-    log.info("listening to %s, db=%s", relay, database.masked_url(url))
+    mode = store.history_mode(engine)
+    log.info("listening to %s, db=%s, history mode=%s", relay, database.masked_url(url), mode)
+    if mode == "full" and engine.dialect.name == "sqlite":
+        log.warning("full history on SQLite stores ~40M rows/day; this is meant for PostgreSQL/TimescaleDB")
     try:
         while True:
             if sock is None:

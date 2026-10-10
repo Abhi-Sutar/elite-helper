@@ -21,8 +21,8 @@ BAD_REVISION = '''
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0002"
-down_revision = "0001"
+revision = "0003"
+down_revision = "0002"
 branch_labels = None
 depends_on = None
 
@@ -54,7 +54,7 @@ class TmpDirTest(unittest.TestCase):
     def scratch_migrations(self, revision_src):
         loc = self.tmp / "migrations"
         shutil.copytree(migrate.SCRIPT_LOCATION, loc, ignore=shutil.ignore_patterns("__pycache__"))
-        (loc / "versions" / "0002_scratch.py").write_text(revision_src)
+        (loc / "versions" / "0003_scratch.py").write_text(revision_src)
         return loc
 
 
@@ -85,7 +85,7 @@ class MigrationTests(TmpDirTest):
         loc = self.scratch_migrations(GOOD_REVISION)
         with mock.patch.object(migrate, "SCRIPT_LOCATION", loc):
             migrate.upgrade(e, backup=False)
-        self.assertEqual(migrate.status(e)["state"], "ahead")  # real code only knows 0001
+        self.assertEqual(migrate.status(e)["state"], "ahead")  # real code only knows 0002
         with self.assertRaises(migrate.SchemaError):
             migrate.ensure_current(e)
 
@@ -97,7 +97,7 @@ class MigrationTests(TmpDirTest):
             with self.assertRaises(Exception):
                 migrate.upgrade(e, backup=False)
         self.assertNotIn("scratch", inspect(e).get_table_names())
-        self.assertEqual(migrate.current_revision(e), "0001")
+        self.assertEqual(migrate.current_revision(e), "0002")
 
     def test_upgrade_makes_backup_of_existing_db(self):
         e = self.engine()
@@ -105,7 +105,7 @@ class MigrationTests(TmpDirTest):
         loc = self.scratch_migrations(GOOD_REVISION)
         with mock.patch.object(migrate, "SCRIPT_LOCATION", loc):
             migrate.upgrade(e)
-        self.assertEqual(len(list(self.tmp.glob("t.sqlite.pre-0001-*.bak"))), 1)
+        self.assertEqual(len(list(self.tmp.glob("t.sqlite.pre-0002-*.bak"))), 1)
 
     def test_concurrent_upgraders_apply_once(self):
         """Separate processes (as in real life: listener + `migrate upgrade`) race; the revision applies once."""
@@ -126,7 +126,7 @@ class MigrationTests(TmpDirTest):
         self.assertEqual([p.returncode for p in procs], [0, 0, 0, 0], errs)
         e = self.engine("race.sqlite")
         with mock.patch.object(migrate, "SCRIPT_LOCATION", loc):
-            self.assertEqual(migrate.current_revision(e), "0002")
+            self.assertEqual(migrate.current_revision(e), "0003")
 
 
 class LegacyImportTests(TmpDirTest):
@@ -195,6 +195,17 @@ class LegacyImportTests(TmpDirTest):
             counts = legacy.import_legacy(s, old)
         self.assertEqual(counts["price_history"], 2)
         self.assertEqual(counts["skipped_orphans"], {"price_history": 1, "factions": 1})
+
+
+class LockPathTests(unittest.TestCase):
+    def test_lock_is_per_database(self):
+        from eddn_helper import config
+        a = config.lock_path("sqlite:///C:/data/elite.sqlite")
+        b = config.lock_path("postgresql+psycopg://u@localhost:5432/elite")
+        c = config.lock_path("postgresql+psycopg://u@localhost:5432/elite_dev?passfile=x")
+        self.assertEqual(a.name, "listener.lock")
+        self.assertEqual(len({a, b, c}), 3)
+        self.assertNotIn("passfile", str(c))
 
 
 class LockTests(TmpDirTest):

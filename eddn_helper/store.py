@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 
 from .database import insert_for
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Market, Meta, PriceHistory,
@@ -12,6 +12,26 @@ RETENTION_DAYS = 30
 HISTORY_MIN_INTERVAL_S = 3600   # at most one history row per commodity per station per hour
 PRICE_CHANGE_PCT = 0.05         # record when buy/sell price moves by >= 5%
 AMOUNT_CHANGE_PCT = 0.25        # record when stock/demand moves by >= 25%
+
+HISTORY_MODE_ENV = "ELITE_HELPER_HISTORY_MODE"
+HISTORY_MODES = ("thresholded", "full")
+
+
+def history_mode(bind_or_session):
+    """
+    How price_history is written. 'full' stores one row per commodity for every accepted market message
+    (needs PostgreSQL/TimescaleDB scale: ~40M rows/day); 'thresholded' stores a row only on a meaningful
+    change. Env ELITE_HELPER_HISTORY_MODE overrides; otherwise PostgreSQL -> full, everything else -> thresholded.
+    """
+    import os
+    mode = (os.environ.get(HISTORY_MODE_ENV) or "").strip().lower()
+    if mode:
+        if mode not in HISTORY_MODES:
+            raise ValueError(f"{HISTORY_MODE_ENV} must be one of {HISTORY_MODES}, got {mode!r}")
+        return mode
+    bind = bind_or_session.get_bind() if hasattr(bind_or_session, "get_bind") else bind_or_session
+    return "full" if bind.dialect.name == "postgresql" else "thresholded"
+
 
 _SYSTEM_FIELDS = ("name", "x", "y", "z", "population", "allegiance", "government", "security",
                   "economy", "second_economy", "controlling_faction", "conflicts")
@@ -112,9 +132,16 @@ def upsert_market(session, m, prices, source="eddn"):
     if ts < datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS):
         return False  # would be pruned straight away; some clients keep re-uploading very old market data
     mid = m["market_id"]
+    mode = history_mode(session)
     existing = session.execute(select(Market.updated_at).where(Market.market_id == mid)).scalar_one_or_none()
     if existing is not None and ts < existing:
-        return False
+        # A late upload: it must not overwrite the newer snapshot, but in full mode it is still a real
+        # observation, so it goes into the time series.
+        if mode != "full":
+            return False
+        ids = commodity_ids(session, [p["commodity"] for p in prices])
+        _insert_history(session, mid, ts, prices, ids)
+        return True
     system_id = session.execute(select(System.id64).where(func.lower(System.name) == m["system_name"].lower())
                                 ).scalar_one_or_none()
     stmt = insert_for(session)(Market.__table__).values(
@@ -130,14 +157,34 @@ def upsert_market(session, m, prices, source="eddn"):
         "source": ex.source}))
 
     ids = commodity_ids(session, [p["commodity"] for p in prices])
-    _record_price_history(session, mid, ts, prices, ids)
-    session.execute(delete(CommodityPrice.__table__).where(CommodityPrice.market_id == mid))
-    session.execute(insert_for(session)(CommodityPrice.__table__).on_conflict_do_nothing(), [{
+    if mode == "full":
+        _insert_history(session, mid, ts, prices, ids)
+    else:
+        _record_price_history(session, mid, ts, prices, ids)
+
+    # Current snapshot: upsert in place (no delete-and-reinsert churn), then drop commodities that vanished.
+    snap = insert_for(session)(CommodityPrice.__table__)
+    ex = snap.excluded
+    session.execute(snap.on_conflict_do_update(
+        index_elements=["market_id", "commodity_id"],
+        set_={c: getattr(ex, c) for c in ("buy_price", "sell_price", "mean_price", "stock", "demand",
+                                          "stock_bracket", "demand_bracket")}), [{
         "market_id": mid, "commodity_id": ids[p["commodity"]], "buy_price": p.get("buy_price"),
         "sell_price": p.get("sell_price"), "mean_price": p.get("mean_price"), "stock": p.get("stock"),
         "demand": p.get("demand"), "stock_bracket": p.get("stock_bracket"),
         "demand_bracket": p.get("demand_bracket")} for p in prices])
+    session.execute(delete(CommodityPrice.__table__).where(
+        CommodityPrice.market_id == mid, CommodityPrice.commodity_id.not_in(list(ids.values()))))
     return True
+
+
+def _insert_history(session, market_id, ts, prices, ids):
+    """Full mode: one time-series row per commodity for this message (same-timestamp duplicates are ignored)."""
+    rows = [{"market_id": market_id, "commodity_id": ids[p["commodity"]], "ts": ts,
+             "buy_price": p.get("buy_price"), "sell_price": p.get("sell_price"),
+             "stock": p.get("stock"), "demand": p.get("demand")} for p in prices]
+    if rows:
+        session.execute(insert_for(session)(PriceHistory.__table__).on_conflict_do_nothing(), rows)
 
 
 def _changed(old, new, pct):
@@ -177,13 +224,30 @@ def _record_price_history(session, market_id, ts, prices, ids):
 
 # ---- maintenance -----------------------------------------------------------------------------
 
+def history_is_hypertable(session):
+    """True when price_history is a TimescaleDB hypertable, whose retention policy drops old chunks itself."""
+    if session.get_bind().dialect.name != "postgresql":
+        return False
+    if session.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")).first() is None:
+        return False
+    return session.execute(text(
+        "SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'price_history'"
+    )).first() is not None
+
+
 def prune(session, days=RETENTION_DAYS):
-    """Delete commodity data older than `days`: history rows, and markets (with prices) not updated since."""
+    """
+    Delete commodity data older than `days`: history rows, and markets (with prices) not updated since.
+    On a TimescaleDB hypertable the retention policy drops expired chunks, so history is left to it.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     stale = select(Market.market_id).where(Market.updated_at < cutoff)
     out = {}
-    out["price_history"] = session.execute(delete(PriceHistory.__table__).where(
-        (PriceHistory.ts < cutoff) | PriceHistory.market_id.in_(stale))).rowcount
+    if history_is_hypertable(session):
+        out["price_history"] = 0
+    else:
+        out["price_history"] = session.execute(delete(PriceHistory.__table__).where(
+            (PriceHistory.ts < cutoff) | PriceHistory.market_id.in_(stale))).rowcount
     out["commodity_prices"] = session.execute(delete(CommodityPrice.__table__).where(
         CommodityPrice.market_id.in_(stale))).rowcount
     out["markets"] = session.execute(delete(Market.__table__).where(Market.updated_at < cutoff)).rowcount

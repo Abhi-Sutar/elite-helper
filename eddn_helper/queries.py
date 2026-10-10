@@ -122,8 +122,39 @@ def station_market(session, station, system=None):
                             for sym, p in prices]}
 
 
-def price_history(session, station, commodity, system=None, days=30):
-    """Time series of one commodity at one station (rows are recorded on meaningful change)."""
+def _bucketed(rows, minutes):
+    """Group time-ordered history rows into fixed buckets: min/avg/max price, last stock/demand, row count."""
+    width = minutes * 60
+    out, cur, cur_key = [], [], None
+
+    def flush():
+        if not cur:
+            return
+        buys = [r["buy_price"] for r in cur if r["buy_price"]]
+        sells = [r["sell_price"] for r in cur if r["sell_price"]]
+        out.append({
+            "ts": iso(datetime.fromtimestamp(cur_key * width, timezone.utc)), "updates": len(cur),
+            "buy_min": min(buys) if buys else None, "buy_avg": round(sum(buys) / len(buys)) if buys else None,
+            "buy_max": max(buys) if buys else None,
+            "sell_min": min(sells) if sells else None, "sell_avg": round(sum(sells) / len(sells)) if sells else None,
+            "sell_max": max(sells) if sells else None,
+            "stock": cur[-1]["stock"], "demand": cur[-1]["demand"]})
+    for r in rows:
+        key = int(r["dt"].timestamp()) // width
+        if key != cur_key:
+            flush()
+            cur, cur_key = [], key
+        cur.append(r)
+    flush()
+    return out
+
+
+def price_history(session, station, commodity, system=None, days=30, bucket_minutes=None, max_points=500):
+    """
+    Time series of one commodity at one station. In full history mode there is a row per market update;
+    in thresholded mode only meaningful changes. If there are more than `max_points` rows (or a
+    bucket size is requested) the series is summarised into time buckets so the reply stays small.
+    """
     cur = station_market(session, station, system)
     if not cur["found"] or cur.get("ambiguous"):
         return cur
@@ -133,15 +164,51 @@ def price_history(session, station, commodity, system=None, days=30):
         select(PriceHistory).join(Commodity, Commodity.id == PriceHistory.commodity_id)
         .where(PriceHistory.market_id == cur["market_id"], Commodity.symbol == sym, PriceHistory.ts >= since)
         .order_by(PriceHistory.ts)).scalars().all()
-    series = [{"ts": iso(r.ts), "buy_price": r.buy_price, "sell_price": r.sell_price,
-               "stock": r.stock, "demand": r.demand} for r in rows]
+    raw = [{"dt": r.ts, "buy_price": r.buy_price, "sell_price": r.sell_price,
+            "stock": r.stock, "demand": r.demand} for r in rows]
 
     def stats(key):
-        vals = [r[key] for r in series if r[key]]
+        vals = [r[key] for r in raw if r[key]]
         return {"min": min(vals), "max": max(vals), "avg": round(sum(vals) / len(vals))} if vals else None
-    return {"found": True, "station": cur["station"], "system": cur["system"], "commodity": sym,
-            "days": days, "points": len(series), "buy_price_stats": stats("buy_price"),
-            "sell_price_stats": stats("sell_price"), "series": series}
+    result = {"found": True, "station": cur["station"], "system": cur["system"], "commodity": sym,
+              "days": days, "updates": len(raw), "first_update": iso(raw[0]["dt"]) if raw else None,
+              "last_update": iso(raw[-1]["dt"]) if raw else None,
+              "buy_price_stats": stats("buy_price"), "sell_price_stats": stats("sell_price")}
+    if bucket_minutes is None and max_points and len(raw) > max_points:
+        span = (raw[-1]["dt"] - raw[0]["dt"]).total_seconds() / 60
+        bucket_minutes = max(1, math.ceil(span / max_points))
+    if bucket_minutes:
+        result["bucket_minutes"] = bucket_minutes
+        result["series"] = _bucketed(raw, bucket_minutes)
+    else:
+        result["series"] = [{"ts": iso(r["dt"]), "buy_price": r["buy_price"], "sell_price": r["sell_price"],
+                             "stock": r["stock"], "demand": r["demand"]} for r in raw]
+    result["points"] = len(result["series"])
+    return result
+
+
+def station_activity(session, station, system=None, days=30):
+    """How many market updates the database holds for a station, per day (distinct timestamps in price_history)."""
+    cur = station_market(session, station, system)
+    if not cur["found"] or cur.get("ambiguous"):
+        return cur
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    stamps = session.execute(
+        select(PriceHistory.ts).where(PriceHistory.market_id == cur["market_id"], PriceHistory.ts >= since)
+        .distinct().order_by(PriceHistory.ts)).scalars().all()
+    per_day = {}
+    for t in stamps:
+        day = t.strftime("%Y-%m-%d")
+        per_day[day] = per_day.get(day, 0) + 1
+    mode = store.history_mode(session)
+    return {"found": True, "station": cur["station"], "system": cur["system"], "days": days,
+            "history_mode": mode,
+            "note": ("every accepted market update is stored" if mode == "full" else
+                     "thresholded mode: counts are meaningful changes only, not every update"),
+            "updates": len(stamps), "first_update": iso(stamps[0]) if stamps else None,
+            "last_update": iso(stamps[-1]) if stamps else None,
+            "current_snapshot_at": cur["updated_at"],
+            "per_day": [{"date": d, "updates": n} for d, n in per_day.items()]}
 
 
 def _fresh_cutoff(max_age_hours):
@@ -267,7 +334,7 @@ def data_status(session):
     hb_age = round((time.time() - int(hb)) / 60, 1) if hb else None
     bind = session.get_bind()
     url = bind.url.render_as_string(hide_password=False)
-    running, pid = lock.holder(config.runtime_dir(url) / "listener.lock")
+    running, pid = lock.holder(config.lock_path(url))
     db_file = config.sqlite_path(url)
     return {"backend": bind.dialect.name, "database": database.masked_url(url),
             "size_mb": round(db_file.stat().st_size / 1e6, 1) if db_file and db_file.exists() else None,

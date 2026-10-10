@@ -187,14 +187,42 @@ def cmd_price_history(args, session):
             return not_found(f"Station '{d['station']}'")
         if d.get("ambiguous"):
             return print("Multiple matches, pass --system.")
-        print(f"{d['commodity']} at {d['station']} ({d['system']}), last {d['days']} days, {d['points']} points")
+        bucket = d.get("bucket_minutes")
+        print(f"{d['commodity']} at {d['station']} ({d['system']}), last {d['days']} days, "
+              f"{d['updates']} updates" + (f", shown as {d['points']} buckets of {bucket} min" if bucket else ""))
         for k in ("buy_price_stats", "sell_price_stats"):
             if d[k]:
                 print(f"  {k.split('_')[0]}: min {fmt_cr(d[k]['min'])}  avg {fmt_cr(d[k]['avg'])}  max {fmt_cr(d[k]['max'])}")
-        table(d["series"], [("Time", "ts"), ("Buy", lambda r: fmt_cr(r["buy_price"]) if r["buy_price"] else "-"),
-                            ("Stock", "stock"), ("Sell", lambda r: fmt_cr(r["sell_price"]) if r["sell_price"] else "-"),
-                            ("Demand", "demand")])
-    emit(args, queries.price_history(session, args.station, args.commodity, args.system, args.days), human)
+        money = lambda key: (lambda r: fmt_cr(r[key]) if r[key] else "-")
+        if bucket:
+            table(d["series"], [("Bucket start", "ts"), ("Updates", "updates"), ("Buy avg", money("buy_avg")),
+                                ("Buy min-max", lambda r: f"{r['buy_min'] or '-'}-{r['buy_max'] or '-'}"),
+                                ("Sell avg", money("sell_avg")), ("Stock", "stock"), ("Demand", "demand")])
+        else:
+            table(d["series"], [("Time", "ts"), ("Buy", money("buy_price")), ("Stock", "stock"),
+                                ("Sell", money("sell_price")), ("Demand", "demand")])
+    emit(args, queries.price_history(session, args.station, args.commodity, args.system, args.days,
+                                     args.bucket, args.max_points), human)
+
+
+def cmd_activity(args, session):
+    def human(d):
+        if not d["found"]:
+            return not_found(f"Station '{d['station']}'")
+        if d.get("ambiguous"):
+            return print("Multiple matches, pass --system.")
+        print(f"{d['station']} ({d['system']}): {d['updates']} updates in the last {d['days']} days "
+              f"(history mode: {d['history_mode']})")
+        print(f"  {d['note']}")
+        print(f"  first {d['first_update']}  last {d['last_update']}  current snapshot {d['current_snapshot_at']}")
+        table(d["per_day"], [("Date", "date"), ("Updates", "updates")])
+    emit(args, queries.station_activity(session, args.station, args.system, args.days), human)
+
+
+def cmd_copy_data(args, _):
+    from . import copydata
+    counts = copydata.copy_data(args.source, args.dest)
+    emit(args, counts, lambda d: print("copied: " + ", ".join(f"{k}={v}" for k, v in d.items())))
 
 
 def cmd_prune(args, session):
@@ -294,6 +322,17 @@ def build_parser():
     sp.add_argument("commodity")
     sp.add_argument("--system")
     sp.add_argument("--days", type=int, default=30)
+    sp.add_argument("--bucket", type=int, metavar="MINUTES", help="summarise into buckets of this many minutes")
+    sp.add_argument("--max-points", type=int, default=500,
+                    help="auto-bucket when there are more rows than this (default 500; 0 = never)")
+    sp = add("activity", cmd_activity, "How many market updates are stored for a station, per day")
+    sp.add_argument("station")
+    sp.add_argument("--system")
+    sp.add_argument("--days", type=int, default=30)
+    sp = add("copy-data", cmd_copy_data, "Copy every table from one database to another (e.g. SQLite -> PostgreSQL)")
+    sp.set_defaults(raw=True)
+    sp.add_argument("--from", dest="source", required=True, help="source database URL or SQLite path")
+    sp.add_argument("--to", dest="dest", required=True, help="destination database URL (must be migrated to head)")
     sp = add("prune", cmd_prune, "Delete commodity data older than N days (the listener also does this hourly)")
     sp.add_argument("--days", type=int, default=store.RETENTION_DAYS)
     sp = add("commodity", cmd_commodity, "Best places to sell (--sell) or buy (--buy) a commodity")

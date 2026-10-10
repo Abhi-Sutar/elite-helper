@@ -1,10 +1,13 @@
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from sqlalchemy import func, select
 
-from eddn_helper import database, migrate, parsers, queries, store
+from eddn_helper import parsers, queries, store
 from eddn_helper.models import CommodityPrice, Market, PriceHistory
+from helpers import new_session
 
 
 def ts(hours_ago=0):
@@ -35,13 +38,6 @@ def jump_msg(name, id64, pos, when=None, infl=(0.6, 0.4), state="Boom", event="F
                              "ActiveStates": [{"State": state}], "PendingStates": [{"State": "Expansion", "Trend": 0}]},
                             {"Name": "Beta", "FactionState": "None", "Government": "$government_Anarchy;",
                              "Influence": infl[1], "Allegiance": "Independent"}]}}
-
-
-def new_session():
-    """Fresh in-memory database built by the real Alembic migrations."""
-    engine = database.make_engine("sqlite://")
-    migrate.upgrade(engine, backup=False)
-    return database.make_session_factory(engine)()
 
 
 class ParserTests(unittest.TestCase):
@@ -131,6 +127,10 @@ class StoreQueryTests(unittest.TestCase):
         self.assertEqual(t["trades"][0]["total_profit"], 150000)
 
     def test_price_history_threshold_throttle_and_prune(self):
+        patcher = mock.patch.dict(os.environ, {store.HISTORY_MODE_ENV: "thresholded"})  # PostgreSQL defaults to full
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         def mk(price, h):
             self.feed(commodity_msg(7, "Hub", "Sol", [("gold", price, 100, 0, 0)], when=ts(h)))
         mk(1000, 40)    # first sight: recorded
@@ -140,12 +140,14 @@ class StoreQueryTests(unittest.TestCase):
         h = queries.price_history(self.s, "hub", "Gold", days=30)
         self.assertEqual([r["buy_price"] for r in h["series"]], [1000, 1100])
         self.assertEqual(h["buy_price_stats"]["max"], 1100)
-        # old history rows are pruned
-        old = self.s.execute(select(PriceHistory).where(PriceHistory.buy_price == 1000)).scalar_one()
-        old.ts = datetime(2000, 1, 1, tzinfo=timezone.utc)
-        self.s.commit()
-        store.prune(self.s, 30)
-        self.assertEqual(self.s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 1)
+        if not store.history_is_hypertable(self.s):
+            # old history rows are pruned (on a hypertable the retention policy does this, and a row cannot
+            # be moved to another chunk by UPDATE, so that case is covered in test_pg_timescale.py)
+            old = self.s.execute(select(PriceHistory).where(PriceHistory.buy_price == 1000)).scalar_one()
+            old.ts = datetime(2000, 1, 1, tzinfo=timezone.utc)
+            self.s.commit()
+            store.prune(self.s, 30)
+            self.assertEqual(self.s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 1)
         # stale markets are pruned with their prices
         self.s.get(Market, 7).updated_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
         self.s.commit()
