@@ -30,13 +30,22 @@ def norm_ts(ts):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _state_names(items):
+def _states(items):
+    """[{"State": "Boom", "Trend": 0}, ...] -> [{"state": "Boom", "trend": 0}, ...] (trend None when absent)."""
     out = []
     for it in items or []:
-        name = it.get("State") if isinstance(it, dict) else it
+        if isinstance(it, dict):
+            name, trend = it.get("State"), it.get("Trend")
+        else:
+            name, trend = it, None
         if name:
-            out.append(name)
+            out.append({"state": name, "trend": trend if isinstance(trend, int) else None})
     return out
+
+
+def state_names(items):
+    """Names only, from either the current {"state","trend"} objects or legacy plain strings."""
+    return [(it.get("state") if isinstance(it, dict) else it) for it in items or [] if it]
 
 
 def _int(v):
@@ -138,9 +147,9 @@ def parse_journal(msg):
                 "influence": float(infl),
                 "state": f.get("FactionState") or "None",
                 "happiness": HAPPINESS.get(hm.group(1)) if hm else None,
-                "active_states": _state_names(f.get("ActiveStates")),
-                "pending_states": _state_names(f.get("PendingStates")),
-                "recovering_states": _state_names(f.get("RecoveringStates")),
+                "active_states": _states(f.get("ActiveStates")),
+                "pending_states": _states(f.get("PendingStates")),
+                "recovering_states": _states(f.get("RecoveringStates")),
                 "is_controlling": fname == controlling,
             })
         if not factions:

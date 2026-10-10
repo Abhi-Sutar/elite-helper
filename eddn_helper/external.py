@@ -73,9 +73,12 @@ def fetch_system(session, name):
             "name": f["name"], "government": f.get("government"), "allegiance": f.get("allegiance"),
             "influence": f.get("influence"), "state": f.get("state") or "None",
             "happiness": f.get("happiness"),
-            "active_states": [s["state"] for s in f.get("activeStates", [])],
-            "pending_states": [s["state"] for s in f.get("pendingStates", [])],
-            "recovering_states": [s["state"] for s in f.get("recoveringStates", [])],
+            "active_states": parsers._states(
+                [{"State": s["state"]} for s in f.get("activeStates", [])]),
+            "pending_states": parsers._states(
+                [{"State": s["state"], "Trend": s.get("trend")} for s in f.get("pendingStates", [])]),
+            "recovering_states": parsers._states(
+                [{"State": s["state"], "Trend": s.get("trend")} for s in f.get("recoveringStates", [])]),
             "is_controlling": f["name"] == (ctrl or i.get("faction")),
         } for f in fac_list if f.get("name")]
     store.upsert_system(session, system, factions, source="edsm")

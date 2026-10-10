@@ -53,7 +53,8 @@ class ParserTests(unittest.TestCase):
         self.assertEqual((s["economy"], s["second_economy"], s["government"], s["security"]),
                          ("HighTech", None, "Democracy", "high"))
         a = p["factions"][0]
-        self.assertEqual((a["happiness"], a["is_controlling"], a["pending_states"]), ("Happy", True, ["Expansion"]))
+        self.assertEqual((a["happiness"], a["is_controlling"], a["pending_states"]),
+                         ("Happy", True, [{"state": "Expansion", "trend": 0}]))
 
     def test_rejects_test_schema_and_other_events(self):
         m = commodity_msg(1, "X", "Y", [("gold", 1, 1, 1, 1)])
@@ -89,6 +90,9 @@ class StoreQueryTests(unittest.TestCase):
         self.assertEqual(info["economy"], "HighTech")
 
     def test_history_only_on_change(self):
+        patcher = mock.patch.dict(os.environ, {store.HISTORY_MODE_ENV: "thresholded"})  # PostgreSQL defaults to full
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.feed(jump_msg("Sol", 1, [0, 0, 0], when=ts(10), infl=(0.5, 0.5)))
         self.feed(jump_msg("Sol", 1, [0, 0, 0], when=ts(8), infl=(0.5, 0.5)))
         self.feed(jump_msg("Sol", 1, [0, 0, 0], when=ts(2), infl=(0.55, 0.45)))
