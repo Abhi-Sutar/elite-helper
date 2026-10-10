@@ -61,10 +61,16 @@ def parse_message(obj):
     if not isinstance(msg, dict) or schema.endswith("/test"):
         return None
     if schema.endswith("/commodity/3"):
-        return parse_commodity(msg)
-    if schema.endswith("/journal/1"):
-        return parse_journal(msg)
-    return None
+        parsed = parse_commodity(msg)
+    elif schema.endswith("/journal/1"):
+        parsed = parse_journal(msg)
+    else:
+        return None
+    if parsed is not None:
+        header = obj.get("header") if isinstance(obj.get("header"), dict) else {}
+        parsed["uploader"] = str(header.get("uploaderID") or "")[:64]  # obfuscated by the EDDN relay
+        parsed["software"] = str(header.get("softwareName") or "")[:40]
+    return parsed
 
 
 def parse_commodity(msg):
