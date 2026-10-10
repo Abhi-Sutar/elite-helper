@@ -48,14 +48,30 @@ def system_info(system: str, live_lookup: bool = False) -> dict:
 
 
 @mcp.tool()
-def faction_history(system: str, days: int = 30, faction: str | None = None) -> dict:
-    """Recorded influence/state changes for factions in a system over the last N days."""
-    return _run(queries.faction_history, system, days, faction)
+def faction_history(system: str, days: int = 30, faction: str | None = None, max_points: int = 500) -> dict:
+    """
+    Stored observations of each faction in a system: influence %, main state, happiness, and the active, pending
+    and recovering states (pending/recovering with their trend). present=false marks the faction leaving.
+    Long series are thinned per faction to about max_points but always keep every change.
+    """
+    return _run(queries.faction_history, system, days, faction, max_points)
+
+
+@mcp.tool()
+def faction_timeline(system: str, faction: str, days: int = 30, max_points: int = 500) -> dict:
+    """
+    Chart-ready history of one faction in one system: the influence series plus intervals (start, last_seen,
+    ended_at) for its main state, happiness, and every active / pending / recovering state, and any 'left' events.
+    """
+    return _run(queries.faction_timeline, system, faction, days, max_points)
 
 
 @mcp.tool()
 def faction_presence(faction: str) -> dict:
-    """Systems where a named faction is present, with influence, state and data age."""
+    """
+    Every system where a named faction is present, with influence, state, data age, and how many history rows
+    (and since when) exist there - use it to choose systems for faction_history / faction_timeline.
+    """
     return _run(queries.faction_presence, faction)
 
 
@@ -66,9 +82,53 @@ def station_market(station: str, system: str | None = None, live_lookup: bool = 
 
 
 @mcp.tool()
-def price_history(station: str, commodity: str, system: str | None = None, days: int = 30) -> dict:
-    """Time series (price, stock, demand) of one commodity at a station, with min/avg/max. Kept ~30 days."""
-    return _run(queries.price_history, station, commodity, system, days)
+def price_history(station: str, commodity: str, system: str | None = None, days: int = 30,
+                  bucket_minutes: int | None = None, max_points: int = 500,
+                  all_commodities: bool = False, max_commodities: int = 25,
+                  resample_minutes: int | None = None) -> dict:
+    """
+    Price and amount time series at a station (fleet carriers by callsign). commodity is one name, a comma
+    list, or 'all' (busiest first, capped at max_commodities unless all_commodities=True). Each point has
+    buy_price (station sells; needs stock), sell_price (station buys; needs demand; 0 = side inactive),
+    mean_price (galactic average), stock (supply), demand and their brackets. Kept 30 days.
+    Stored rows are change points (the value at any time is the latest row at or before it; state_at_start gives the
+    state when the window opens); `updates` is the true number of EDDN updates and `rows` the stored change rows.
+    Series longer than max_points are summarised into time buckets with min/avg/max of prices, stock and demand
+    (pass bucket_minutes to choose the size); resample_minutes gives evenly spaced samples carrying the last state
+    forward, each with the number of updates in that step.
+    """
+    return _run(queries.price_history, station, commodity, system, days, bucket_minutes, max_points,
+                all_commodities, max_commodities, resample_minutes)
+
+
+@mcp.tool()
+def station_traffic(station: str, system: str | None = None, days: int = 7, bucket_minutes: int = 60) -> dict:
+    """How often a station (or fleet carrier callsign) is reported to EDDN: updates and distinct uploaders per time bucket, updates per hour, busiest period."""
+    return _run(queries.station_traffic, station, system, days, bucket_minutes)
+
+
+@mcp.tool()
+def system_traffic(system: str, days: int = 7, bucket_minutes: int = 60) -> dict:
+    """How often a system's factions are reported to EDDN (journal messages with faction data), per time bucket."""
+    return _run(queries.system_traffic, system, days, bucket_minutes)
+
+
+@mcp.tool()
+def busiest_stations(days: int = 1, limit: int = 20, include_carriers: bool = True) -> dict:
+    """Leaderboard of the most frequently reported stations: updates, updates per hour, distinct uploaders, price rows written, share of all updates."""
+    return _run(queries.busiest_stations, days, limit, include_carriers)
+
+
+@mcp.tool()
+def busiest_systems(days: int = 1, limit: int = 20) -> dict:
+    """Leaderboard of systems whose factions are reported most often to EDDN."""
+    return _run(queries.busiest_systems, days, limit)
+
+
+@mcp.tool()
+def station_activity(station: str, system: str | None = None, days: int = 30) -> dict:
+    """How many market updates are stored for a station (total, first/last, per day) - e.g. a fleet carrier by callsign."""
+    return _run(queries.station_activity, station, system, days)
 
 
 @mcp.tool()
