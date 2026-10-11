@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 ENV_URL = "ELITE_HELPER_DATABASE_URL"
+ENV_TZ = "ELITE_HELPER_DISPLAY_TZ"
 
 
 def data_dir():
@@ -52,3 +53,18 @@ def runtime_dir(url):
     """Directory for the lock file and log: next to the SQLite file, else the default data dir."""
     p = sqlite_path(url)
     return p.parent if p else data_dir()
+
+
+def display_tz():
+    """
+    Timezone used to *show* times in CLI tables and CSV (stored and --json/MCP times are always UTC).
+    ELITE_HELPER_DISPLAY_TZ: unset/'UTC' -> None (leave UTC), 'local' -> the system zone (a tzinfo-less marker),
+    or an IANA name such as 'Europe/Berlin'.
+    """
+    name = (os.environ.get(ENV_TZ) or "UTC").strip()
+    if name.upper() == "UTC":
+        return None
+    if name.lower() == "local":
+        return "local"
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(name)
