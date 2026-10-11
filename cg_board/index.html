@@ -53,6 +53,12 @@ td:first-child { font-family: var(--font-body); white-space: normal; min-width: 
 .chip { display: inline-block; font-family: var(--font-body); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 99px; border: 1px solid currentColor; margin-left: 6px; vertical-align: 1px; }
 .chip.low { color: var(--warn); } .chip.old { color: var(--crit); } .chip.best { color: var(--good); }
 .score { font-weight: 600; color: var(--accent); }
+.copy { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; margin-left: 4px; vertical-align: middle; background: none; border: 0; border-radius: 4px; color: var(--muted); cursor: pointer; }
+.copy:hover { color: var(--accent); }
+.copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.copy.done { color: var(--good); }
+.copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.copy .ok, .copy.done .cp { display: none; } .copy.done .ok { display: inline; }
 .down { color: var(--crit); } .up { color: var(--good); } .flat { color: var(--muted); }
 footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 80ch; }
 @media (prefers-reduced-motion: no-preference) { .dot { animation: pulse 2s ease-in-out infinite; } .dot.stale { animation: none; } }
@@ -85,6 +91,23 @@ function score(r, a) {
   var trip = 1 + (r.ls == null ? LS_UNKNOWN : r.ls) / LS_SCALE;
   var fresh = a <= AGE_GRACE ? 1 : Math.pow(0.5, (a - AGE_GRACE) / AGE_HALFLIFE);
   return 100 * supply * fresh / trip;
+}
+var COPY_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><g class="cp"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></g><path class="ok" d="M3.5 8.5l3 3 6-7"/></svg>';
+var copied = { sys: null, until: 0 };
+function copyLegacy(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  document.body.removeChild(ta);
+  return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+}
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(function () { return copyLegacy(text); });
+  }
+  return copyLegacy(text);
 }
 function fmt(n) { return Number(n).toLocaleString("en-US"); }
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
@@ -168,7 +191,8 @@ function tierHtml(j, list, tab) {
     if (a > 6) chips += '<span class="chip old">OLD DATA</span>';
     if (r.ly / (j * S.laden_ly) > 0.97) chips += '<span class="chip low">TIGHT</span>';
     if (r.ls != null && r.ls <= 50 && loads >= 50 && a <= 6) chips += '<span class="chip best">CLOSE TO STAR</span>';
-    return "<tr><td><span class=\"name\">" + esc(x.n) + "</span>" + chips + "<br><span class=\"sys\">" + esc(r.system) + "</span></td>" +
+    return "<tr><td><span class=\"name\">" + esc(x.n) + "</span>" + chips + "<br><span class=\"sys\">" + esc(r.system) + "</span>" +
+      '<button class="copy' + (copied.sys === r.system && Date.now() < copied.until ? " done" : "") + '" type="button" data-sys="' + esc(r.system) + '" aria-label="Copy system name" title="' + (copied.sys === r.system && Date.now() < copied.until ? "Copied" : "Copy system name") + '">' + COPY_SVG + "</button></td>" +
       "<td class=\"score\">" + Math.round(x.score) + "</td>" +
       "<td>" + r.ly.toFixed(1) + "</td>" +
       "<td>" + Math.ceil(r.ly / S.unladen_ly) + "</td>" +
@@ -190,6 +214,17 @@ function load() {
     .then(function (j) { data = j; render(); })
     .catch(function () { if (!data) document.getElementById("stamp").textContent = "no data yet"; });
 }
+document.getElementById("tiers").addEventListener("click", function (e) {
+  var b = e.target.closest(".copy");
+  if (!b) return;
+  var sys = b.getAttribute("data-sys");
+  copyText(sys).then(function () {
+    copied = { sys: sys, until: Date.now() + 1200 };
+    b.classList.add("done"); b.title = "Copied";
+    setTimeout(function () { b.classList.remove("done"); b.title = "Copy system name"; }, 1200);
+  }).catch(function () { b.title = "Copy failed"; });
+});
+
 load();
 setInterval(load, 10000);
 setInterval(render, 5000);
