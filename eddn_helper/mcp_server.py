@@ -48,6 +48,62 @@ def system_info(system: str, live_lookup: bool = False) -> dict:
 
 
 @mcp.tool()
+def system_economy(system: str, live_lookup: bool = False) -> dict:
+    """
+    A system's economy and second economy (e.g. Extraction, Refinery, Industrial, HighTech, Agri) plus its stations
+    with type and station economies. Current snapshot only; live_lookup refreshes a missing/stale system from EDSM and
+    lists EDSM-only stations under stations_live.
+    """
+    return _run(live.system_economy, system, live_lookup)
+
+
+@mcp.tool()
+def find_systems(economies: list[str] | None = None, economy_scope: str = "system", include_second: bool = True,
+                 faction_state: str | None = None, state_in: str = "any", controlling_only: bool = False,
+                 near: str | None = None, ly: float | None = None, min_population: int = 0,
+                 demand_commodities: list[str] | None = None, include_carrier_markets: bool = False,
+                 max_age_hours: float | None = None, limit: int = 20,
+                 exclude_economies: list[str] | None = None, exclude_scope: str = "any",
+                 exclude_states: list[str] | None = None, exclude_states_in: str = "any",
+                 exclude_systems: list[str] | None = None, max_population: int | None = None,
+                 allegiance: list[str] | None = None, government: list[str] | None = None,
+                 security: list[str] | None = None, in_conflict: bool | None = None,
+                 conflict_type: list[str] | None = None, faction_name: str | None = None,
+                 min_influence: float | None = None, max_influence: float | None = None,
+                 happiness: list[str] | None = None, state_trend: int | None = None, min_stations: int = 0,
+                 station_types: list[str] | None = None, sort: str = "distance") -> dict:
+    """
+    Find systems matching ALL given criteria, nearest to `near` first (else most populated first).
+    economies: any of these, e.g. ["Extraction", "Refinery"]; economy_scope: "system" (system economy, plus second
+    economy when include_second), "station" (any station's economy) or "any".
+    faction_state: e.g. "Expansion"; state_in: "any" (main state or any active/pending/recovering list), "state",
+    "active", "pending" or "recovering"; controlling_only: only the controlling faction. Results show where the state
+    was found and the raw trend of pending/recovering states.
+    demand_commodities: keep systems with a station currently demanding any of them (e.g. ["bertrandite", "coltan"]).
+    Exclusions: exclude_economies rejects a system when its economy, second economy or (exclude_scope "any", the
+    default, or "station") any station's economy is one of them; exclude_states rejects systems where ANY faction has
+    one of those states (exclude_states_in as state_in); exclude_systems drops names.
+    System filters: max_population, allegiance, government, security (any-of lists), in_conflict (true/false),
+    conflict_type (War, CivilWar, Election), min_stations, station_types (e.g. ["coriolis", "outpost"]).
+    Faction filters, which must all hold for the same faction: faction_state/state_in, state_trend (raw number),
+    controlling_only, faction_name, min_influence/max_influence (percent), happiness (any-of list).
+    sort: "distance" (default), "population", "influence", "freshest" or "name".
+    Example - agricultural or industrial systems with a faction pending Expansion and no extraction/refinery anywhere:
+    economies=["Agri", "Industrial"], faction_state="Expansion", state_in="pending",
+    exclude_economies=["Extraction", "Refinery"].
+    Snapshot of systems the listener has seen; check factions_age_hours.
+    """
+    return _run(queries.find_systems, economies, economy_scope, include_second, faction_state, state_in,
+                controlling_only, near, ly, min_population, demand_commodities, include_carrier_markets,
+                max_age_hours, limit, exclude_economies=exclude_economies, exclude_scope=exclude_scope,
+                exclude_states=exclude_states, exclude_states_in=exclude_states_in, exclude_systems=exclude_systems,
+                max_population=max_population, allegiance=allegiance, government=government, security=security,
+                in_conflict=in_conflict, conflict_type=conflict_type, faction_name=faction_name,
+                min_influence=min_influence, max_influence=max_influence, happiness=happiness,
+                state_trend=state_trend, min_stations=min_stations, station_types=station_types, sort=sort)
+
+
+@mcp.tool()
 def faction_history(system: str, days: int = 30, faction: str | None = None, max_points: int = 500) -> dict:
     """
     Stored observations of each faction in a system: influence %, main state, happiness, and the active, pending

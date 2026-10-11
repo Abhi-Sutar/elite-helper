@@ -202,6 +202,46 @@ class SystemUpdate(Base):
     __table_args__ = (Index("ix_system_update_ts", "ts"),)
 
 
+class Station(Base):
+    """
+    A station, outpost or surface settlement as listed by EDSM, with its controlling faction (fleet carriers are not
+    stored). Replaced as a whole per system by `store.replace_stations`; `station_sync` records that it was fetched.
+    """
+    __tablename__ = "stations"
+    system_id64: Mapped[int] = mapped_column(ForeignKey("systems.id64", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    market_id: Mapped[int | None] = mapped_column(BigId)
+    station_type: Mapped[str | None] = mapped_column(String(40))
+    body: Mapped[str | None] = mapped_column(String(120))
+    distance_to_arrival_ls: Mapped[float | None] = mapped_column(Float)
+    economy: Mapped[str | None] = mapped_column(String(40))
+    second_economy: Mapped[str | None] = mapped_column(String(40))
+    allegiance: Mapped[str | None] = mapped_column(String(40))
+    government: Mapped[str | None] = mapped_column(String(40))
+    controlling_faction: Mapped[str | None] = mapped_column(String(120))
+    has_market: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    has_shipyard: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    has_outfitting: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    services: Mapped[list | None] = mapped_column(JsonType)
+    info_updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)   # EDSM's information timestamp
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    source: Mapped[str] = mapped_column(String(16), default="edsm", server_default="edsm")
+
+    __table_args__ = (
+        Index("ix_stations_market_id", "market_id"),
+        Index("ix_stations_controlling_faction_lower", func.lower(controlling_faction)),
+    )
+
+
+class StationSync(Base):
+    """We asked EDSM for this system's stations at `fetched_at` - tells "no stations" apart from "not fetched yet"."""
+    __tablename__ = "station_sync"
+    system_id64: Mapped[int] = mapped_column(ForeignKey("systems.id64", ondelete="CASCADE"), primary_key=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    station_count: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    source: Mapped[str] = mapped_column(String(16), default="edsm", server_default="edsm")
+
+
 class Meta(Base):
     __tablename__ = "meta"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
