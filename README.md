@@ -103,6 +103,21 @@ populated first); `--csv` / `--json` export them.
 | `--state X --state-in any\|state\|active\|pending\|recovering` | a faction has state X as its main state, in its active/pending/recovering list, or anywhere (default `any`); `--controlling-only` limits it to the controlling faction |
 | `--near SYSTEM --ly N`, `--min-pop N`, `--max-age-hours N` | distance, population and data-age filters |
 | `--demand a,b` | a station currently has demand for any of these commodities |
+| `--exclude-economy A,B` `--exclude-scope any\|system\|station` | reject a system whose economy, second economy or (scope `any`/`station`) any station's economy is one of these - "not at all" is the default |
+| `--exclude-state X,Y` `--exclude-state-in ...` | reject systems where **any** faction has one of these states (e.g. `War,CivilWar`) |
+| `--exclude-system A,B`, `--max-pop N` | drop named systems; maximum population (`--min-pop` exists too) |
+| `--allegiance`, `--government`, `--security` | any-of lists, e.g. `--government Democracy,Corporate --security low,anarchy` |
+| `--conflict yes\|no`, `--conflict-type War,CivilWar,Election` | systems with / without an active conflict, and of which type |
+| `--faction NAME`, `--min-influence N`, `--max-influence N`, `--happiness A,B`, `--trend N`, `--controlling-only` | criteria on the **same** faction as `--state` (influence in percent; `--trend` is the raw number stored for pending/recovering states) |
+| `--min-stations N`, `--station-type coriolis,outpost` | at least N stations with a stored market; a station type containing one of the names |
+| `--sort distance\|population\|influence\|freshest\|name` | ordering (default distance; most populated first without `--near`) |
+
+Example - agricultural or industrial systems near Sol with a faction **pending Expansion** and no extraction or
+refinery economy anywhere (system, second economy or stations):
+
+```
+python -m eddn_helper find-systems --economy Agri,Industrial --state Expansion --state-in pending --exclude-economy Extraction,Refinery --near Sol --ly 60
+```
 
 Each result lists the matching factions with where the state was found and the **raw trend** of pending/recovering
 states, the system's stations with their economies, and the age of the faction data. Notes: this is a **current

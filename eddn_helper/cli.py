@@ -131,7 +131,8 @@ TIMELINE_COLUMNS = ["field", "value", "trend", "start", "last_seen", "ended_at"]
 
 def hits_text(f):
     """'active, pending (trend 1)': where the searched state was found for one faction."""
-    return ", ".join(h["in"] + (f" (trend {h['trend']})" if h["trend"] is not None else "") for h in f["found_in"])
+    return ", ".join(h["in"] + (f" (trend {h['trend']})" if h["trend"] is not None else "") for h in f["found_in"]) \
+        or f"{f['influence_pct']}%"
 
 
 SYSTEMS_COLUMNS = ["system", "distance_ly", "population", "economy", "second_economy", "matched_economy", "factions",
@@ -252,10 +253,17 @@ def cmd_economy(args, session):
 
 
 def cmd_find_systems(args, session):
+    conflict = {"yes": True, "no": False}.get(args.conflict)
     res = queries.find_systems(
         session, args.economy, args.economy_scope, not args.no_second, args.state, args.state_in,
         args.controlling_only, args.near, args.ly, args.min_pop, args.demand, args.carriers, args.max_age_hours,
-        args.limit)
+        args.limit, exclude_economies=args.exclude_economy, exclude_scope=args.exclude_scope,
+        exclude_states=args.exclude_state, exclude_states_in=args.exclude_state_in,
+        exclude_systems=args.exclude_system, max_population=args.max_pop, allegiance=args.allegiance,
+        government=args.government, security=args.security, in_conflict=conflict, conflict_type=args.conflict_type,
+        faction_name=args.faction, min_influence=args.min_influence, max_influence=args.max_influence,
+        happiness=args.happiness, state_trend=args.trend, min_stations=args.min_stations,
+        station_types=args.station_type, sort=args.sort)
 
     def human(d):
         if "error" in d:
@@ -274,7 +282,8 @@ def cmd_find_systems(args, session):
             return f"{r['economy'] or '-'}/{r['second_economy'] or '-'}{extra}"
         cols = [("System", "system"), ("Ly", lambda r: r["distance_ly"] if r["distance_ly"] is not None else "-"),
                 ("Pop", lambda r: f"{r['population']:,}" if r["population"] else "-"), ("Economy", economy)]
-        if args.state:
+        if any((args.state, args.faction, args.happiness, args.controlling_only, args.min_influence is not None,
+                args.max_influence is not None)):
             cols.append(("Factions", factions))
         cols += [("Stations", lambda r: len(r["stations"])),
                  ("Faction age", lambda r: fmt_age(r["factions_age_hours"]))]
@@ -655,6 +664,27 @@ def build_parser():
     sp.add_argument("--carriers", action="store_true", help="include fleet carrier markets")
     sp.add_argument("--max-age-hours", type=float, help="ignore systems whose data is older than this")
     sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--exclude-economy", help="reject systems with any of these economies (system, second or station)")
+    sp.add_argument("--exclude-scope", choices=["any", "system", "station"], default="any",
+                    help="where --exclude-economy looks: system economies only, stations only, or all (default)")
+    sp.add_argument("--exclude-state", help="reject systems where any faction has one of these states")
+    sp.add_argument("--exclude-state-in", choices=["any", "state", "active", "pending", "recovering"], default="any")
+    sp.add_argument("--exclude-system", help="comma separated system names to drop")
+    sp.add_argument("--max-pop", type=int, help="maximum system population")
+    sp.add_argument("--allegiance", help="any of (e.g. Federation,Independent)")
+    sp.add_argument("--government", help="any of (e.g. Democracy,Corporate)")
+    sp.add_argument("--security", help="any of (e.g. low,medium,high,anarchy)")
+    sp.add_argument("--conflict", choices=["yes", "no"], help="only systems with / without an active conflict")
+    sp.add_argument("--conflict-type", help="War, CivilWar or Election (any of)")
+    sp.add_argument("--faction", help="a faction with exactly this name (case-insensitive)")
+    sp.add_argument("--min-influence", type=float, help="matching faction influence at least N percent")
+    sp.add_argument("--max-influence", type=float, help="matching faction influence at most N percent")
+    sp.add_argument("--happiness", help="matching faction happiness, any of (e.g. Happy,Elated)")
+    sp.add_argument("--trend", type=int, help="raw trend value of the --state entry (pending/recovering)")
+    sp.add_argument("--min-stations", type=int, default=0, help="at least N stations with a stored market")
+    sp.add_argument("--station-type", help="a station whose type contains one of these (e.g. coriolis,outpost)")
+    sp.add_argument("--sort", choices=list(queries.SORTS), default="distance",
+                    help="order: distance (default), population, influence, freshest, name")
     sp = add("commodity", cmd_commodity, "Best places to sell (--sell) or buy (--buy) a commodity")
     sp.add_argument("name")
     g = sp.add_mutually_exclusive_group(required=True)

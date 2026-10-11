@@ -6,7 +6,7 @@ from sqlalchemy import delete, func, select, text, update
 
 from .database import insert_for
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Market, MarketUpdate, Meta,
-                     PriceHistory, System, SystemUpdate)
+                     PriceHistory, Station, StationSync, System, SystemUpdate)
 
 RETENTION_DAYS = 30             # commodity data (history and stale markets)
 FACTION_RETENTION_DAYS = 365    # faction history
@@ -86,6 +86,38 @@ def commodity_ids(session, symbols):
 
 
 # ---- meta ------------------------------------------------------------------------------------
+
+def replace_stations(session, system_id64, stations, fetched_at=None, source="edsm"):
+    """
+    Replace the stored stations of one system with `stations` (dicts from external._parse_station; fleet carriers are
+    skipped) and record the sync, so a system with no stations is still known to have been fetched. Returns the count.
+    """
+    fetched_at = fetched_at or datetime.now(timezone.utc)
+    rows = {}
+    for st in stations:
+        if st.get("is_carrier") or not st.get("station"):
+            continue
+        rows[st["station"]] = {
+            "system_id64": system_id64, "name": st["station"][:120], "market_id": st.get("market_id"),
+            "station_type": (st.get("station_type") or None) and st["station_type"][:40],
+            "body": st.get("body"), "distance_to_arrival_ls": st.get("distance_to_arrival_ls"),
+            "economy": st.get("economy"), "second_economy": st.get("second_economy"),
+            "allegiance": st.get("allegiance"), "government": st.get("government"),
+            "controlling_faction": st.get("controlling_faction"), "has_market": bool(st.get("has_market")),
+            "has_shipyard": bool(st.get("has_shipyard")), "has_outfitting": bool(st.get("has_outfitting")),
+            "services": st.get("services") or [],
+            "info_updated_at": to_dt(st["info_updated_at"]) if st.get("info_updated_at") else None,
+            "fetched_at": fetched_at, "source": source}
+    session.execute(delete(Station.__table__).where(Station.system_id64 == system_id64))
+    if rows:
+        session.execute(insert_for(session)(Station.__table__), list(rows.values()))
+    sync = insert_for(session)(StationSync.__table__).values(
+        system_id64=system_id64, fetched_at=fetched_at, station_count=len(rows), source=source)
+    session.execute(sync.on_conflict_do_update(index_elements=["system_id64"], set_={
+        "fetched_at": sync.excluded.fetched_at, "station_count": sync.excluded.station_count,
+        "source": sync.excluded.source}))
+    return len(rows)
+
 
 def set_meta(session, key, value):
     stmt = insert_for(session)(Meta.__table__).values(key=key, value=str(value))

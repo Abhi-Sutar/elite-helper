@@ -91,15 +91,58 @@ def _station_economies(s):
     return list(dict.fromkeys(e for e in (s.get("economy"), s.get("secondEconomy")) if e))
 
 
-def fetch_stations(system):
-    """EDSM's station list for a system as plain dicts (not stored: our `markets` table needs a market)."""
+def _parse_station(s):
+    """One EDSM station object -> our dict (keeps the keys the economy view already used)."""
+    name, typ = s.get("name"), s.get("type")
+    body = s.get("body") or {}
+    return {
+        "station": name, "station_type": typ, "market_id": s.get("marketId"),
+        "is_carrier": typ == "Fleet Carrier" or bool(parsers.CARRIER_RE.match(name or "")),
+        "body": body.get("name"), "distance_to_arrival_ls": s.get("distanceToArrival"),
+        "economies": _station_economies(s), "economy": s.get("economy"), "second_economy": s.get("secondEconomy"),
+        "allegiance": s.get("allegiance"), "government": s.get("government"),
+        "controlling_faction": (s.get("controllingFaction") or {}).get("name"),
+        "has_market": bool(s.get("haveMarket")), "has_shipyard": bool(s.get("haveShipyard")),
+        "has_outfitting": bool(s.get("haveOutfitting")), "services": list(s.get("otherServices") or []),
+        "info_updated_at": _edsm_ts((s.get("updateTime") or {}).get("information")),
+    }
+
+
+def fetch_station_list(system, include_carriers=False):
+    """
+    EDSM's stations of a system: {'id64', 'system', 'stations': [...]} or None when EDSM does not know the system.
+    Includes planetary outposts, Odyssey settlements and every other station type; fleet carriers only on request.
+    """
     data = _get("/api-system-v1/stations", systemName=system)
-    stations = data.get("stations") if isinstance(data, dict) else None
-    return [{"station": s.get("name"), "station_type": s.get("type"),
-             "economies": _station_economies(s),
-             "has_market": bool(s.get("haveMarket")), "market_id": s.get("marketId"),
-             "distance_to_arrival_ls": s.get("distanceToArrival")}
-            for s in stations or [] if s.get("name")]
+    if not isinstance(data, dict) or not data.get("name"):
+        return None
+    stations = [_parse_station(s) for s in data.get("stations") or [] if s.get("name")]
+    if not include_carriers:
+        stations = [s for s in stations if not s["is_carrier"]]
+    return {"id64": data.get("id64"), "system": data["name"], "stations": stations}
+
+
+def fetch_stations(system, include_carriers=False):
+    """The station dicts only (not stored); see fetch_station_list."""
+    data = fetch_station_list(system, include_carriers)
+    return data["stations"] if data else []
+
+
+def refresh_stations(session, system, system_id64=None):
+    """
+    Fetch a system's stations from EDSM and replace what is stored for it (also marks the system as synced).
+    Returns the number of stations stored, or None if EDSM does not know the system or the system is not in our database.
+    """
+    from .models import System
+    data = fetch_station_list(system)
+    if data is None:
+        return None
+    id64 = system_id64 or data["id64"]
+    if id64 is None or session.get(System, id64) is None:
+        return None
+    n = store.replace_stations(session, id64, data["stations"])
+    session.commit()
+    return n
 
 
 def fetch_market(session, station, system=None):
