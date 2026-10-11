@@ -25,7 +25,7 @@
   color-scheme: dark;
 }
 body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); padding-inline: 16px; padding-block: 20px 40px; }
-.wrap { max-width: 1040px; margin-inline: auto; display: flex; flex-direction: column; gap: 20px; }
+.wrap { max-width: 1400px; margin-inline: auto; display: flex; flex-direction: column; gap: 20px; }
 header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; }
 h1 { font-size: clamp(1.4rem, 3.4vw, 2rem); font-weight: 800; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
 .sub { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; max-width: 66ch; }
@@ -42,16 +42,17 @@ h1 { font-size: clamp(1.4rem, 3.4vw, 2rem); font-weight: 800; letter-spacing: -0
 .tier h2 span:last-child { color: var(--muted); letter-spacing: 0; text-transform: none; font-weight: 400; }
 .tier.empty h2 { border-bottom: 0; }
 .scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 0.9rem; }
-th { text-align: right; font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+th { text-align: right; font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
-td { padding: 10px 14px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
-td:first-child { font-family: var(--font-body); white-space: normal; min-width: 220px; }
+td:first-child { font-family: var(--font-body); white-space: normal; min-width: 180px; }
 .name { font-weight: 600; }
 .sys { color: var(--muted); font-size: 0.8rem; }
 .chip { display: inline-block; font-family: var(--font-body); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 99px; border: 1px solid currentColor; margin-left: 6px; vertical-align: 1px; }
 .chip.low { color: var(--warn); } .chip.old { color: var(--crit); } .chip.best { color: var(--good); }
+.score { font-weight: 600; color: var(--accent); }
 .down { color: var(--crit); } .up { color: var(--good); } .flat { color: var(--muted); }
 footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 80ch; }
 @media (prefers-reduced-motion: no-preference) { .dot { animation: pulse 2s ease-in-out infinite; } .dot.stale { animation: none; } }
@@ -76,6 +77,15 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 80
 var data = null, active = null;
 try { active = localStorage.getItem("cgTab"); } catch (e) {}
 
+// Ranking score: supply (saturating in loads) x freshness / trip cost (grows with distance from the star).
+var LOAD_HALF = 25, LS_SCALE = 1500, LS_UNKNOWN = 1500, AGE_GRACE = 6, AGE_HALFLIFE = 12;
+function score(r, a) {
+  var loads = r.stock / ship().cargo;
+  var supply = loads / (loads + LOAD_HALF);
+  var trip = 1 + (r.ls == null ? LS_UNKNOWN : r.ls) / LS_SCALE;
+  var fresh = a <= AGE_GRACE ? 1 : Math.pow(0.5, (a - AGE_GRACE) / AGE_HALFLIFE);
+  return 100 * supply * fresh / trip;
+}
 function fmt(n) { return Number(n).toLocaleString("en-US"); }
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 function ship() { return data.config.ship; }
@@ -121,7 +131,7 @@ function render() {
   document.getElementById("foot").textContent =
     "Stock and price come from player-reported market data, so a row only changes when someone opens that station's market. Data age is how long ago the last report came in. Loads = stock divided by " + fmt(S.cargo) +
     " t, one full hold. Margin = CG price minus the buy price. Change is stock now minus stock when the station first appeared on this tab (run 'python cg_board/cg_board.py reset' to restart it). Ls is the trip from the arrival star, looked up from EDSM and blank if unknown. Jumps are straight-line distance divided by the ship's range, rounded up: the group heading is laden jumps back to " +
-    cfg.target.name + ", and Jumps out is the unladen trip from " + cfg.target.name + ". TIGHT means the laden count only works if every jump is flown at full range. Station types listed: " + cfg.station_types.join(", ") + ".";
+    cfg.target.name + ", and Jumps out is the unladen trip from " + cfg.target.name + ". TIGHT means the laden count only works if every jump is flown at full range. Score ranks stations inside each jump section: it rises with loads available (saturating) and falls with distance from the star and with data older than 6 h. Station types listed: " + cfg.station_types.join(", ") + ".";
 
   var groups = {};
   Object.keys(tab.rows).forEach(function (n) {
@@ -146,7 +156,8 @@ function render() {
 
 function tierHtml(j, list, tab) {
   var S = ship();
-  list = list.slice().sort(function (a, b) { return b.r.stock - a.r.stock; });
+  list = list.map(function (x) { x.score = score(x.r, ageNow(x.r)); return x; })
+    .sort(function (a, b) { return b.score - a.score || b.r.stock - a.r.stock; });
   var total = list.reduce(function (s, x) { return s + x.r.stock; }, 0);
   var rows = list.map(function (x) {
     var r = x.r, d = r.stock - r.base;
@@ -158,6 +169,7 @@ function tierHtml(j, list, tab) {
     if (r.ly / (j * S.laden_ly) > 0.97) chips += '<span class="chip low">TIGHT</span>';
     if (r.ls != null && r.ls <= 50 && loads >= 50 && a <= 6) chips += '<span class="chip best">CLOSE TO STAR</span>';
     return "<tr><td><span class=\"name\">" + esc(x.n) + "</span>" + chips + "<br><span class=\"sys\">" + esc(r.system) + "</span></td>" +
+      "<td class=\"score\">" + Math.round(x.score) + "</td>" +
       "<td>" + r.ly.toFixed(1) + "</td>" +
       "<td>" + Math.ceil(r.ly / S.unladen_ly) + "</td>" +
       "<td>" + (r.ls == null ? "?" : fmt(r.ls)) + "</td>" +
@@ -169,7 +181,7 @@ function tierHtml(j, list, tab) {
       "<td>" + ageText(a) + "</td></tr>";
   }).join("");
   return '<section class="tier"><h2><span>' + j + " laden jump" + (j > 1 ? "s" : "") + "</span><span>" + fmt(total) + " t across " + list.length + " station" + (list.length > 1 ? "s" : "") + "</span></h2>" +
-    '<div class="scroll"><table><thead><tr><th>Station</th><th>Ly</th><th title="Jumps from the target to the station, unladen">Jumps out</th><th title="Distance from the arrival star">Ls</th><th>Stock (t)</th><th>Change</th><th>Loads</th><th>Price (Cr)</th><th title="CG price minus buy price, per tonne">Margin (Cr/t)</th><th>Data age</th></tr></thead><tbody>' + rows + "</tbody></table></div></section>";
+    '<div class="scroll"><table><thead><tr><th>Station</th><th title="Ranking score 0-100: plenty of loads, close to the star and fresh data score high. Rows are sorted by it.">Score</th><th title="Straight-line distance from the target">Ly</th><th title="Jumps from the target to the station, unladen">Out</th><th title="Distance from the arrival star">Ls</th><th title="Tonnes in stock">Stock</th><th title="Stock now minus stock at baseline">Change</th><th title="Stock divided by one full hold">Loads</th><th title="Buy price, Cr per tonne">Price</th><th title="CG price minus buy price, Cr per tonne">Margin</th><th title="How long ago the last market report came in">Age</th></tr></thead><tbody>' + rows + "</tbody></table></div></section>";
 }
 
 function load() {
