@@ -85,6 +85,13 @@ Retention: market history 30 days; faction history 1 year; current snapshots alw
 when the listener first saw a station or system (EDDN keeps nothing), and rows written before the 0003 migration
 have no mean price, brackets, happiness or state lists.
 
+## Time zones
+
+Everything is stored and returned in **UTC** (`timestamptz` on PostgreSQL, UTC on SQLite; `--json` and the MCP tools
+always give `YYYY-MM-DDTHH:MM:SSZ`). To *show* local times in CLI tables and `--csv`, set
+`ELITE_HELPER_DISPLAY_TZ` to `local` or an IANA name (`Europe/Berlin`); times then print with their offset, e.g.
+`2026-10-11T12:54:03+02:00`. The default is `UTC`. (psql shows times in its own session zone; that is display only.)
+
 ## History mode: changes (default) / full / thresholded
 
 `ELITE_HELPER_HISTORY_MODE` selects how `price_history` and `faction_history` are written. The update log
