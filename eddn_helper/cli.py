@@ -621,6 +621,42 @@ def cmd_trades(args, session):
     emit(args, res, human)
 
 
+# ---- journal commands (read the local Saved Games journals, no database needed) ----
+
+def cmd_where(args, _):
+    from .journal import context
+    data = context.where_am_i(args.journal_dir)
+    if args.enrich and "error" not in data:
+        engine = database.make_engine(args.db)
+        try:
+            migrate.ensure_current(engine)
+            with database.session_scope(database.make_session_factory(engine)) as session:
+                context.enrich(session, data, args.live)
+        except migrate.SchemaError as e:   # keep the journal answer; just say why the database part is missing
+            data["enrich_error"] = str(e)
+        finally:
+            engine.dispose()
+    emit(args, data, lambda d: print("\n".join(context.format_where(d))))
+    return 1 if "error" in data else 0
+
+
+def cmd_credit_rate(args, _):
+    from .journal import files as jfiles, income
+    try:
+        if args.file:
+            paths = args.file
+        else:
+            paths = jfiles.require_journal_files(jfiles.journal_dir(args.journal_dir))
+            if args.session:
+                paths = paths[-1:]
+    except jfiles.JournalNotFound as e:
+        data = {"error": str(e)}
+    else:
+        data = income.credit_rate(paths, args.streams, args.since, args.max_gap_minutes, args.crew_wages)
+    emit(args, data, lambda d: print("\n".join(income.format_report(d))))
+    return 1 if "error" in data else 0
+
+
 # ---- argument parsing -------------------------------------------------------
 
 def build_parser():
@@ -791,6 +827,22 @@ def build_parser():
     sp.add_argument("--max-age-hours", type=float, default=24, help="ignore data older than this (default 24)")
     sp.add_argument("--carriers", action="store_true", help="include fleet carriers")
     sp.add_argument("--limit", type=int, default=10)
+    sp = add("where", cmd_where, "Where you are now: system, station, ship and credits from the newest journal")
+    sp.set_defaults(raw=True)
+    sp.add_argument("--journal-dir", help="journal folder (default: $ELITE_JOURNAL_DIR or the Saved Games folder)")
+    sp.add_argument("--enrich", action="store_true",
+                    help="also show what the EDDN database knows about the current system and station")
+    sp.add_argument("--live", action="store_true", help="with --enrich: query EDSM if the system is missing or stale")
+    sp = add("credit-rate", cmd_credit_rate, "Credits/hour from journal files over stitched active playtime")
+    sp.set_defaults(raw=True)
+    sp.add_argument("--journal-dir", help="journal folder (default: $ELITE_JOURNAL_DIR or the Saved Games folder)")
+    sp.add_argument("--file", action="append", help="parse specific journal file(s); can repeat")
+    sp.add_argument("--since", help="only count events after this UTC time, YYYY-MM-DDTHH:MM:SS")
+    sp.add_argument("--max-gap-minutes", type=float, help="treat in-session gaps longer than this as non-playtime (AFK)")
+    sp.add_argument("--streams", help="comma separated subset of: trading,bounty,mission,exploration,carrier,"
+                                      "carrier_market,maintenance,rebuy,crew_wages (default all)")
+    sp.add_argument("--crew-wages", action="store_true", help="also show wages paid per NPC crew member")
+    sp.add_argument("--session", action="store_true", help="only the most recent journal file")
     return p
 
 
