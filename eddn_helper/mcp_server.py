@@ -71,7 +71,8 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
                  conflict_type: list[str] | None = None, faction_name: str | None = None,
                  min_influence: float | None = None, max_influence: float | None = None,
                  happiness: list[str] | None = None, state_trend: int | None = None, min_stations: int = 0,
-                 station_types: list[str] | None = None, sort: str = "distance") -> dict:
+                 station_types: list[str] | None = None, sort: str = "distance",
+                 min_faction_stations: int = 0) -> dict:
     """
     Find systems matching ALL given criteria, nearest to `near` first (else most populated first).
     economies: any of these, e.g. ["Extraction", "Refinery"]; economy_scope: "system" (system economy, plus second
@@ -88,6 +89,10 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
     Faction filters, which must all hold for the same faction: faction_state/state_in, state_trend (raw number),
     controlling_only, faction_name, min_influence/max_influence (percent), happiness (any-of list).
     sort: "distance" (default), "population", "influence", "freshest" or "name".
+    Stations come from EDSM data stored by the CLI command `refresh-stations` (incl. planetary outposts and surface
+    settlements, each with its controlling faction and controlled_by_matching_faction) merged with market uploads;
+    stations_known false means EDSM has not been asked for that system - station filters (min_stations, station_types,
+    min_faction_stations) never reject such systems. min_faction_stations: the matching faction controls at least N.
     Example - agricultural or industrial systems with a faction pending Expansion and no extraction/refinery anywhere:
     economies=["Agri", "Industrial"], faction_state="Expansion", state_in="pending",
     exclude_economies=["Extraction", "Refinery"].
@@ -100,7 +105,19 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
                 max_population=max_population, allegiance=allegiance, government=government, security=security,
                 in_conflict=in_conflict, conflict_type=conflict_type, faction_name=faction_name,
                 min_influence=min_influence, max_influence=max_influence, happiness=happiness,
-                state_trend=state_trend, min_stations=min_stations, station_types=station_types, sort=sort)
+                state_trend=state_trend, min_stations=min_stations, station_types=station_types, sort=sort,
+                min_faction_stations=min_faction_stations)
+
+
+@mcp.tool()
+def faction_stations(faction: str, system: str | None = None, near: str | None = None, ly: float | None = None,
+                     station_types: list[str] | None = None, limit: int = 100) -> dict:
+    """
+    Stations (incl. planetary outposts and surface settlements) controlled by a faction, from the EDSM station data
+    stored with `refresh-stations`; only systems that were fetched are covered. Filter by system, distance or
+    station_types (e.g. ["settlement"], ["surface"], ["coriolis"]).
+    """
+    return _run(queries.faction_stations, faction, system, near, ly, station_types, limit)
 
 
 @mcp.tool()
