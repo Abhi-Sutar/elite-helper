@@ -24,6 +24,27 @@ def system_info(session, name, live=False, max_age_hours=48):
     return res
 
 
+def system_economy(session, name, live=False, max_age_hours=48):
+    """queries.system_economy(); with `live`, refresh a missing/stale system from EDSM and list EDSM-only stations."""
+    res = queries.system_economy(session, name)
+    stale = not res["found"] or res.get("info_age_hours") is None or res["info_age_hours"] > max_age_hours
+    if not live or not stale:
+        return res
+    try:
+        if external.fetch_system(session, name):
+            res = queries.system_economy(session, name)
+        if res["found"]:
+            known = {s["station"].lower() for s in res["stations"]}
+            res["stations_live"] = [s for s in external.fetch_stations(res["system"])
+                                    if s["station"].lower() not in known]
+    except external.LiveLookupError as e:
+        res["live_error"] = str(e)
+    except DBAPIError:
+        session.rollback()
+        res["live_error"] = READ_ONLY_MSG
+    return res
+
+
 def station_market(session, station, system=None, live=False, max_age_hours=48):
     res = queries.station_market(session, station, system)
     stale = not res["found"] or (not res.get("ambiguous") and res.get("age_hours", 0) > max_age_hours)

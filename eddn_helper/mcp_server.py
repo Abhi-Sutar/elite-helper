@@ -48,6 +48,37 @@ def system_info(system: str, live_lookup: bool = False) -> dict:
 
 
 @mcp.tool()
+def system_economy(system: str, live_lookup: bool = False) -> dict:
+    """
+    A system's economy and second economy (e.g. Extraction, Refinery, Industrial, HighTech, Agri) plus its stations
+    with type and station economies. Current snapshot only; live_lookup refreshes a missing/stale system from EDSM and
+    lists EDSM-only stations under stations_live.
+    """
+    return _run(live.system_economy, system, live_lookup)
+
+
+@mcp.tool()
+def find_systems(economies: list[str] | None = None, economy_scope: str = "system", include_second: bool = True,
+                 faction_state: str | None = None, state_in: str = "any", controlling_only: bool = False,
+                 near: str | None = None, ly: float | None = None, min_population: int = 0,
+                 demand_commodities: list[str] | None = None, include_carrier_markets: bool = False,
+                 max_age_hours: float | None = None, limit: int = 20) -> dict:
+    """
+    Find systems matching ALL given criteria, nearest to `near` first (else most populated first).
+    economies: any of these, e.g. ["Extraction", "Refinery"]; economy_scope: "system" (system economy, plus second
+    economy when include_second), "station" (any station's economy) or "any".
+    faction_state: e.g. "Expansion"; state_in: "any" (main state or any active/pending/recovering list), "state",
+    "active", "pending" or "recovering"; controlling_only: only the controlling faction. Results show where the state
+    was found and the raw trend of pending/recovering states.
+    demand_commodities: keep systems with a station currently demanding any of them (e.g. ["bertrandite", "coltan"]).
+    Snapshot of systems the listener has seen; check factions_age_hours.
+    """
+    return _run(queries.find_systems, economies, economy_scope, include_second, faction_state, state_in,
+                controlling_only, near, ly, min_population, demand_commodities, include_carrier_markets,
+                max_age_hours, limit)
+
+
+@mcp.tool()
 def faction_history(system: str, days: int = 30, faction: str | None = None, max_points: int = 500) -> dict:
     """
     Stored observations of each faction in a system: influence %, main state, happiness, and the active, pending
