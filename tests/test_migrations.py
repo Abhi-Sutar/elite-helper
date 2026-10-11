@@ -177,6 +177,24 @@ class Revision0004Tests(TmpDirTest):
         self.assertEqual(tuple(fac), (0.5, None))
 
 
+class Revision0005Tests(TmpDirTest):
+    def test_adds_station_tables_and_keeps_rows(self):
+        e = self.engine()
+        migrate.upgrade(e, rev="0004", backup=False)
+        with e.begin() as c:
+            c.execute(text("INSERT INTO systems(id64, name, updated_at, source) VALUES (1, 'Sol', '2026-10-01 00:00:00', 'eddn')"))
+        migrate.upgrade(e, backup=False)
+        self.assertTrue({"stations", "station_sync"} <= set(inspect(e).get_table_names()))
+        with e.begin() as c:
+            c.execute(text("INSERT INTO stations(system_id64, name, station_type, controlling_faction, fetched_at) "
+                           "VALUES (1, 'Evans Farm', 'Odyssey Settlement', 'Grow', '2026-10-11 00:00:00')"))
+            c.execute(text("INSERT INTO station_sync(system_id64, fetched_at, station_count) VALUES (1, '2026-10-11 00:00:00', 1)"))
+        with e.connect() as c:
+            self.assertEqual(c.execute(text("SELECT name FROM systems")).scalar(), "Sol")
+            row = c.execute(text("SELECT has_market, source FROM stations")).one()
+        self.assertEqual(tuple(row), (0, "edsm"))                 # server defaults
+
+
 class LegacyImportTests(TmpDirTest):
     def make_old_db(self):
         path = self.tmp / "eddn.sqlite"

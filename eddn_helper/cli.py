@@ -239,10 +239,13 @@ def cmd_economy(args, session):
             return not_found(f"System '{d['system']}'")
         print(f"{d['system']}  economy={d['economy'] or '-'} / {d['second_economy'] or '-'}  pop={d['population'] or 0:,}  "
               f"(data {fmt_age(d['info_age_hours'])} old, source: {d['source']})")
+        if not d["stations_known"]:
+            print("(stations: only those seen in market uploads - run `refresh-stations` for the full EDSM list)")
         table(d["stations"], [("Station", "station"), ("Type", lambda r: r["station_type"] or "-"),
+                              ("Body", lambda r: r["body"] or "-"),
                               ("Economies", lambda r: "/".join(r["economies"]) or "-"),
-                              ("Carrier", lambda r: "yes" if r["is_carrier"] else ""),
-                              ("Market age", lambda r: fmt_age(r["market_age_hours"]))])
+                              ("Controlled by", lambda r: r["controlling_faction"] or "-"),
+                              ("Prices", lambda r: fmt_age(r["market_age_hours"]) if r["has_prices"] else "-")])
         if d.get("stations_live"):
             print("\nAlso listed by EDSM (no market stored locally):")
             table(d["stations_live"], [("Station", "station"), ("Type", lambda r: r["station_type"] or "-"),
@@ -252,9 +255,9 @@ def cmd_economy(args, session):
     emit(args, res, human)
 
 
-def cmd_find_systems(args, session):
+def _find_systems(args, session):
     conflict = {"yes": True, "no": False}.get(args.conflict)
-    res = queries.find_systems(
+    return queries.find_systems(
         session, args.economy, args.economy_scope, not args.no_second, args.state, args.state_in,
         args.controlling_only, args.near, args.ly, args.min_pop, args.demand, args.carriers, args.max_age_hours,
         args.limit, exclude_economies=args.exclude_economy, exclude_scope=args.exclude_scope,
@@ -263,8 +266,71 @@ def cmd_find_systems(args, session):
         government=args.government, security=args.security, in_conflict=conflict, conflict_type=args.conflict_type,
         faction_name=args.faction, min_influence=args.min_influence, max_influence=args.max_influence,
         happiness=args.happiness, state_trend=args.trend, min_stations=args.min_stations,
-        station_types=args.station_type, sort=args.sort)
+        station_types=args.station_type, sort=args.sort, min_faction_stations=args.min_faction_stations)
 
+
+def refresh_system_stations(session, name, id64=None):
+    """Fetch one system's stations from EDSM into the database. Returns (count_or_None, error_message_or_None)."""
+    from sqlalchemy.exc import DBAPIError
+    from . import external
+    try:
+        return external.refresh_stations(session, name, id64), None
+    except external.LiveLookupError as e:
+        return None, str(e)
+    except DBAPIError:
+        session.rollback()
+        return None, live.READ_ONLY_MSG
+
+
+def cmd_refresh_stations(args, session):
+    out = []
+    for name in args.systems:
+        n, err = refresh_system_stations(session, name)
+        out.append({"system": name, "stations": n, "error": err})
+        msg = f"{n} stations stored" if n is not None else (err or "not found (is the system in the database?)")
+        print(f"{name}: {msg}", file=sys.stderr)
+        if err:
+            break
+    if args.json:
+        print(json.dumps(out, indent=2))
+
+
+def cmd_faction_stations(args, session):
+    res = queries.faction_stations(session, args.faction, args.system, args.near, args.ly, args.station_type, args.limit)
+
+    def human(d):
+        if "error" in d:
+            print(d["error"], file=sys.stderr)
+            return
+        print(f"{d['count']} stations in {d['systems']} systems controlled by {d['faction']}")
+        table(d["stations"], [("System", "system"), ("Station", "station"), ("Type", lambda r: r["station_type"] or "-"),
+                              ("Body", lambda r: r["body"] or "-"), ("Economy", lambda r: "/".join(r["economies"]) or "-"),
+                              ("Ls", lambda r: r["distance_to_arrival_ls"] if r["distance_to_arrival_ls"] is not None else "-"),
+                              ("Ly", lambda r: r["distance_ly"] if r["distance_ly"] is not None else "-")])
+        print(d["note"])
+    emit(args, res, human)
+
+
+def cmd_find_systems(args, session):
+    res = _find_systems(args, session)
+    if args.refresh_stations and "error" not in res:
+        budget, tried = args.refresh_limit, set()
+        while budget > 0:
+            stale = args.stations_max_age_hours
+            todo = [r for r in res["results"] if r["system"] not in tried and (
+                not r["stations_known"] or (r["stations_fetched_age_hours"] or 0) > stale)][:budget]
+            if not todo:
+                break
+            for r in todo:
+                tried.add(r["system"])
+                budget -= 1
+                n, err = refresh_system_stations(session, r["system"], r["id64"])
+                print(f"refreshed stations of {r['system']}: " + (f"{n} stored" if err is None and n is not None
+                                                                   else err or "not found at EDSM"), file=sys.stderr)
+                if err:
+                    budget = 0
+                    break
+            res = _find_systems(args, session)
     def human(d):
         if "error" in d:
             print(d["error"], file=sys.stderr)
@@ -275,6 +341,7 @@ def cmd_find_systems(args, session):
 
         def factions(r):
             return "; ".join(f"{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
+                             + (f", {f['stations_controlled']} stn" if r["stations_known"] else "")
                              for f in r["matching_factions"]) or "-"
 
         def economy(r):
@@ -285,11 +352,14 @@ def cmd_find_systems(args, session):
         if any((args.state, args.faction, args.happiness, args.controlling_only, args.min_influence is not None,
                 args.max_influence is not None)):
             cols.append(("Factions", factions))
-        cols += [("Stations", lambda r: len(r["stations"])),
+        cols += [("Stations", lambda r: f"{len(r['stations'])}" + ("" if r["stations_known"] else "?")),
                  ("Faction age", lambda r: fmt_age(r["factions_age_hours"]))]
         if args.demand:
             cols.append(("Demand", lambda r: ", ".join(f"{x['commodity']}@{x['station']}" for x in r["demand"][:3])))
         table(d["results"], cols)
+        if d.get("stations_unknown"):
+            print(f"\n{d['stations_unknown']} of {d['count']} systems have no EDSM station data ('?' above; station "
+                  f"filters were not applied to them). Fetch it with --refresh-stations or: refresh-stations <system> ...")
     emit(args, res, human, systems_csv)
 
 
@@ -564,7 +634,7 @@ def build_parser():
         sp = sub.add_parser(name, help=help_, description=help_)
         sp.set_defaults(func=fn)
         sp.add_argument("--json", action="store_true", help="machine-readable JSON output")
-        if name in ("price-history", "factions", "timeline", "traffic", "busiest", "find-systems"):
+        if name in ("price-history", "factions", "timeline", "traffic", "busiest", "find-systems", "faction-stations"):
             sp.add_argument("--csv", action="store_true", help="CSV on stdout (redirect to a file for charting)")
         if live_opt:
             sp.add_argument("--live", action="store_true", help="query EDSM if local data is missing or stale")
@@ -685,6 +755,23 @@ def build_parser():
     sp.add_argument("--station-type", help="a station whose type contains one of these (e.g. coriolis,outpost)")
     sp.add_argument("--sort", choices=list(queries.SORTS), default="distance",
                     help="order: distance (default), population, influence, freshest, name")
+    sp.add_argument("--min-faction-stations", type=int, default=0,
+                    help="the matching faction controls at least N stations (needs EDSM station data)")
+    sp.add_argument("--refresh-stations", action="store_true",
+                    help="fetch stations from EDSM for result systems without station data (needs a writable database)")
+    sp.add_argument("--refresh-limit", type=int, default=30, help="max systems to fetch per run (1 request/second)")
+    sp.add_argument("--stations-max-age-hours", type=float, default=168,
+                    help="also re-fetch stations older than this with --refresh-stations (default 168)")
+    sp = add("refresh-stations", cmd_refresh_stations,
+             "Fetch the stations (incl. settlements and controlling faction) of systems from EDSM into the database")
+    sp.add_argument("systems", nargs="+", metavar="SYSTEM")
+    sp = add("faction-stations", cmd_faction_stations, "Stations a faction controls (from the stored EDSM station data)")
+    sp.add_argument("faction")
+    sp.add_argument("--system", help="only this system")
+    sp.add_argument("--near", metavar="SYSTEM")
+    sp.add_argument("--ly", type=float)
+    sp.add_argument("--station-type", help="e.g. settlement, outpost, coriolis, surface")
+    sp.add_argument("--limit", type=int, default=100)
     sp = add("commodity", cmd_commodity, "Best places to sell (--sell) or buy (--buy) a commodity")
     sp.add_argument("name")
     g = sp.add_mutually_exclusive_group(required=True)
