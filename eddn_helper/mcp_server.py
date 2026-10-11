@@ -1,8 +1,13 @@
 """MCP (stdio) server exposing the same queries as the CLI. Run: python -m eddn_helper.mcp_server"""
 
+from datetime import datetime, timedelta, timezone
+
 from mcp.server.mcpserver import MCPServer
 
 from . import database, live, migrate, queries
+from .journal import context as journal_context
+from .journal import files as jfiles
+from .journal import income as journal_income
 
 mcp = MCPServer(
     "elite-helper",
@@ -12,7 +17,10 @@ mcp = MCPServer(
         "and use data_status to see whether the listener is running. Use live=True to fall back to EDSM "
         "for systems/stations the database lacks. Commodity names are matched case/space-insensitively "
         "(e.g. 'Liquid Oxygen'). 'buy_price' is what a commander pays the station; 'sell_price' is what "
-        "the station pays the commander."))
+        "the station pays the commander. "
+        "Two tools read the commander's own local journal files instead of the database: where_am_i (current "
+        "system/station/ship - the answer to 'where am I' or 'what is near me') and credit_rate (credits/hour "
+        "and income by stream). Use where_am_i first when a question depends on the player's location."))
 
 
 _engine = None
@@ -222,6 +230,47 @@ def best_trades(origin_system: str, max_ly: float = 30, cargo_tons: int | None =
     """Top buy/sell commodity pairs among markets within max_ly of a system, by profit per ton (or total if cargo_tons set)."""
     return _run(queries.best_trades, origin_system, max_ly, cargo_tons, max_age_hours, min_amount,
                 include_carriers, limit)
+
+
+@mcp.tool()
+def where_am_i(enrich: bool = False, live_lookup: bool = False) -> dict:
+    """
+    The commander's current system, station, ship and credits, read from the local Elite Dangerous journal (no
+    database needed). Position is the last known one: check game_running and last_event_age_seconds - when the game is
+    not running it is where you were when you quit. credits is the balance at login (credits_as_of); status.balance
+    is live while the game runs. enrich=True adds the EDDN database's view of the system (eddn_system: factions,
+    states) and station market age (eddn_market); live_lookup also refreshes a missing/stale system from EDSM.
+    """
+    data = journal_context.where_am_i()
+    if enrich and "error" not in data:
+        res = _run(journal_context.enrich, data, live_lookup)
+        if "error" in res and "system" not in res:   # database unavailable: keep the journal answer
+            data["enrich_error"] = res["error"]
+            return data
+        return res
+    return data
+
+
+@mcp.tool()
+def credit_rate(since_hours: float | None = None, session_only: bool = False, max_gap_minutes: float | None = None,
+                streams: list[str] | None = None, include_crew: bool = False) -> dict:
+    """
+    Credits per hour from the local journals, using active playtime stitched across sessions (time between
+    sessions never counts; max_gap_minutes also drops AFK gaps inside a session). Streams: trading, bounty, mission,
+    exploration, carrier, carrier_market, maintenance, rebuy, crew_wages - each with earned/spent/net, plus a
+    per-commodity trading table, maintenance breakdown and per-session rows. since_hours limits to the last N
+    hours; session_only uses just the newest journal. Caveats: carrier_market is an approximation from carrier
+    balance snapshots (it also absorbs upkeep); mission commodity rewards are not priced. All history by default,
+    which can be slow - pass since_hours for a recent window.
+    """
+    try:
+        paths = jfiles.require_journal_files(jfiles.journal_dir())
+    except jfiles.JournalNotFound as e:
+        return {"error": str(e)}
+    if session_only:
+        paths = paths[-1:]
+    since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)) if since_hours else None
+    return journal_income.credit_rate(paths, streams, since, max_gap_minutes, include_crew)
 
 
 def main():

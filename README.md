@@ -2,7 +2,8 @@
 
 Elite Dangerous helper scripts.
 
-- `ed_credit_rate.py` — credits/hour from your local journal files (stdlib only).
+- `ed_credit_rate.py` — credits/hour from your local journal files (stdlib only; a thin wrapper over
+  `eddn_helper/journal/`, which the `where` / `credit-rate` commands and MCP tools below share).
 - `eddn_helper/` — Inara-style **commodity prices** and **system faction states** collected live from
   [EDDN](https://github.com/EDCD/EDDN), with a command-line tool and an MCP server so Claude can query it.
 
@@ -125,6 +126,27 @@ snapshot** (economy changes are not kept as history) and only covers systems the
 lookup) has seen; `economy --live` refreshes a missing/stale system from EDSM and lists stations EDSM knows that we have
 no market for (not stored). Searching the whole galaxy via Spansh is not implemented yet.
 
+## Your journals: where you are, credits per hour
+
+These read the game's own journal files (default `%USERPROFILE%\Saved Games\Frontier Developments\Elite Dangerous`,
+override with `--journal-dir` or `ELITE_JOURNAL_DIR`) and need no database.
+
+```
+python -m eddn_helper where [--enrich [--live]]                       # system, station, ship, credits; --enrich adds EDDN data for the system/station
+python -m eddn_helper credit-rate [--session] [--since 2026-10-01T00:00:00] [--max-gap-minutes 20] [--streams trading,bounty] [--crew-wages]
+```
+
+MCP: `where_am_i(enrich, live_lookup)` and `credit_rate(since_hours, session_only, max_gap_minutes, streams, include_crew)`.
+`where` is the **last known** position: `game_running` is false after a `Shutdown` event (or a long-silent journal
+without one) and `last_event_age_seconds` says how stale it is. `credits` is the balance at login; `status.balance`
+(from `Status.json`) is live while the game runs. Credit rate sums active playtime per journal file (time between
+sessions never counts) over trading, bounties, missions, exploration, carrier, carrier market (approximate, from
+balance snapshots), maintenance, rebuys and crew wages; `ed_credit_rate.py` prints the same report.
+
+Code layout, so more can be added: `journal/files.py` (locate/read), `journal/state.py` (commander state; add an
+event with `@handles("EventName")`), `journal/status.py` (`Status.json`), `journal/income.py` (credit rate),
+`journal/context.py` (what the CLI/MCP return). Tests build synthetic journals (`tests/test_journal.py`).
+
 ## Time zones
 
 Everything is stored and returned in **UTC** (`timestamptz` on PostgreSQL, UTC on SQLite; `--json` and the MCP tools
@@ -239,7 +261,9 @@ cd ..\elite-helper-live ; uv sync            # the live listener runs from this 
 - `.\scripts\dev.ps1 snapshot` — consistent copy of the live DB into `%TEMP%\eddn_dev.sqlite` for experiments.
 - `.\scripts\dev.ps1 listen` — second listener on the dev copy (EDDN allows many subscribers).
 - `.\scripts\dev.ps1 test` — unit tests.
-- `.\scripts\deploy.ps1` — tests → fast-forward the live worktree to `main` → `uv sync` → restart the task.
+- `.\scripts\deploy.ps1` — tests → fast-forward the live worktree to `main` → `uv sync` → restart the task **only if
+  listener code changed** (listener/store/parsers/models/database/lock/migrate/config, migrations, dependencies).
+  CLI/MCP-only changes leave the listener running; the MCP server picks them up when Claude restarts or reconnects it.
 
 ## Start at boot (Task Scheduler)
 
@@ -269,8 +293,10 @@ dies, and reconnects after ~90 s of silence (e.g. after sleep). Sleep/hibernate 
 }
 ```
 
-Tools: `data_status`, `system_info`, `faction_history`, `faction_presence`, `station_market`,
-`price_history`, `find_commodity`, `best_trades`. The listener must be running separately.
+Tools: `data_status`, `system_info`, `system_economy`, `find_systems`, `faction_stations`, `faction_history`,
+`faction_timeline`, `faction_presence`, `station_market`, `price_history`, `station_traffic`, `system_traffic`,
+`busiest_stations`, `busiest_systems`, `station_activity`, `find_commodity`, `best_trades`, plus the journal tools
+`where_am_i` and `credit_rate`. The listener must be running separately (the journal tools don't need it).
 For Claude Code, the plain CLI above works as-is through the shell.
 
 ## Limitations
