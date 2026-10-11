@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CG Supply Board</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;800&family=Chivo+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --bg: #f3f5f8; --panel: #ffffff; --fg: #16202c; --muted: #5d6b7c; --line: #d9e0e8;
+  --accent: #c2570c; --good: #1f7a4d; --warn: #a86a00; --crit: #b3261e; --tint: #fbeee3;
+  --font-body: "Chivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-num: "Chivo Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1620; --panel: #17212d; --fg: #e6ecf3; --muted: #93a2b5; --line: #263445;
+    --accent: #f0883e; --good: #4fc58a; --warn: #e3b341; --crit: #ff7b72; --tint: #2a2118;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1620; --panel: #17212d; --fg: #e6ecf3; --muted: #93a2b5; --line: #263445;
+  --accent: #f0883e; --good: #4fc58a; --warn: #e3b341; --crit: #ff7b72; --tint: #2a2118;
+  color-scheme: dark;
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); padding-inline: 16px; padding-block: 20px 40px; }
+.wrap { max-width: 1400px; margin-inline: auto; display: flex; flex-direction: column; gap: 20px; }
+header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; }
+h1 { font-size: clamp(1.4rem, 3.4vw, 2rem); font-weight: 800; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; max-width: 66ch; }
+.live { font-family: var(--font-num); font-size: 0.8rem; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); flex: none; }
+.dot.stale { background: var(--crit); }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tab { font-family: var(--font-body); font-size: 0.9rem; font-weight: 600; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
+.tab small { font-family: var(--font-num); font-weight: 400; font-size: 0.7rem; color: var(--muted); }
+.tab[aria-selected="true"] { border-color: var(--accent); background: var(--tint); box-shadow: inset 0 -3px 0 var(--accent); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tier { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.tier h2 { margin: 0; padding: 10px 14px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--line); background: var(--tint); }
+.tier h2 span:last-child { color: var(--muted); letter-spacing: 0; text-transform: none; font-weight: 400; }
+.tier.empty h2 { border-bottom: 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+th { text-align: right; font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { font-family: var(--font-body); white-space: normal; min-width: 180px; }
+.name { font-weight: 600; }
+.sys { color: var(--muted); font-size: 0.8rem; }
+.chip { display: inline-block; font-family: var(--font-body); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 99px; border: 1px solid currentColor; margin-left: 6px; vertical-align: 1px; }
+.chip.low { color: var(--warn); } .chip.old { color: var(--crit); } .chip.best { color: var(--good); }
+.score { font-weight: 600; color: var(--accent); }
+.copy { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; margin-left: 4px; vertical-align: middle; background: none; border: 0; border-radius: 4px; color: var(--muted); cursor: pointer; }
+.copy:hover { color: var(--accent); }
+.copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.copy.done { color: var(--good); }
+.copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.copy .ok, .copy.done .cp { display: none; } .copy.done .ok { display: inline; }
+.down { color: var(--crit); } .up { color: var(--good); } .flat { color: var(--muted); }
+footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 80ch; }
+@media (prefers-reduced-motion: no-preference) { .dot { animation: pulse 2s ease-in-out infinite; } .dot.stale { animation: none; } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">CG supply board</h1>
+      <p class="sub" id="sub"></p>
+    </div>
+    <div class="live" aria-live="polite"><span class="dot" id="dot"></span><span id="stamp">loading</span></div>
+  </header>
+  <div class="tabs" role="tablist" id="tabs"></div>
+  <div id="tiers" class="wrap" style="gap:20px" role="tabpanel"></div>
+  <footer id="foot"></footer>
+</div>
+
+<script>
+var data = null, active = null;
+try { active = localStorage.getItem("cgTab"); } catch (e) {}
+
+// Ranking score: supply (saturating in loads) x freshness / trip cost (grows with distance from the star).
+var LOAD_HALF = 25, LS_SCALE = 1500, LS_UNKNOWN = 1500, AGE_GRACE = 6, AGE_HALFLIFE = 12;
+function score(r, a) {
+  var loads = r.stock / ship().cargo;
+  var supply = loads / (loads + LOAD_HALF);
+  var trip = 1 + (r.ls == null ? LS_UNKNOWN : r.ls) / LS_SCALE;
+  var fresh = a <= AGE_GRACE ? 1 : Math.pow(0.5, (a - AGE_GRACE) / AGE_HALFLIFE);
+  return 100 * supply * fresh / trip;
+}
+var COPY_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><g class="cp"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></g><path class="ok" d="M3.5 8.5l3 3 6-7"/></svg>';
+var copied = { sys: null, until: 0 };
+function copyLegacy(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  document.body.removeChild(ta);
+  return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+}
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(function () { return copyLegacy(text); });
+  }
+  return copyLegacy(text);
+}
+function fmt(n) { return Number(n).toLocaleString("en-US"); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+function ship() { return data.config.ship; }
+function jumps(ly) { return Math.max(1, Math.ceil(ly / ship().laden_ly)); }
+function ageNow(r) {
+  var extra = (Date.now() - new Date(data.updated).getTime()) / 3600000;
+  return r.age + Math.max(0, extra);
+}
+function ageText(h) {
+  if (h < 1 / 60) return "now";
+  if (h < 1) return Math.round(h * 60) + " min";
+  if (h < 48) return h.toFixed(1) + " h";
+  return Math.round(h / 24) + " d";
+}
+
+function renderTabs() {
+  var host = document.getElementById("tabs");
+  host.innerHTML = data.order.map(function (k) {
+    var t = data.tabs[k], total = 0;
+    Object.keys(t.rows).forEach(function (n) { total += t.rows[n].stock; });
+    return '<button class="tab" role="tab" data-key="' + esc(k) + '" aria-selected="' + (k === active) + '">' + esc(t.label) + "<small>" + fmt(total) + " t</small></button>";
+  }).join("");
+  Array.prototype.forEach.call(host.querySelectorAll(".tab"), function (b) {
+    b.addEventListener("click", function () {
+      active = b.getAttribute("data-key");
+      try { localStorage.setItem("cgTab", active); } catch (e) {}
+      render();
+    });
+  });
+}
+
+function render() {
+  if (!data) return;
+  if (!data.tabs[active]) active = data.order[0];
+  var cfg = data.config, tab = data.tabs[active], S = ship();
+  document.getElementById("title").textContent = cfg.title;
+  document.title = cfg.title;
+  renderTabs();
+  document.getElementById("sub").textContent =
+    "Large-pad stations within " + tab.max_jumps + " laden jump" + (tab.max_jumps > 1 ? "s" : "") + " of " + cfg.target.name +
+    " (up to " + tab.max_ly + " Ly)." + (tab.cg ? " The CG pays " + fmt(tab.cg) + " Cr per tonne." : "") +
+    " " + S.name + " jumps " + S.laden_ly + " Ly laden and " + S.unladen_ly + " Ly unladen.";
+  document.getElementById("foot").textContent =
+    "Stock and price come from player-reported market data, so a row only changes when someone opens that station's market. Data age is how long ago the last report came in. Loads = stock divided by " + fmt(S.cargo) +
+    " t, one full hold. Margin = CG price minus the buy price. Change is stock now minus stock when the station first appeared on this tab (run 'python cg_board/cg_board.py reset' to restart it). Ls is the trip from the arrival star, looked up from EDSM and blank if unknown. Jumps are straight-line distance divided by the ship's range, rounded up: the group heading is laden jumps back to " +
+    cfg.target.name + ", and Jumps out is the unladen trip from " + cfg.target.name + ". TIGHT means the laden count only works if every jump is flown at full range. Score ranks stations inside each jump section: it rises with loads available (saturating) and falls with distance from the star and with data older than 6 h. Station types listed: " + cfg.station_types.join(", ") + ".";
+
+  var groups = {};
+  Object.keys(tab.rows).forEach(function (n) {
+    var r = tab.rows[n], j = jumps(r.ly);
+    (groups[j] = groups[j] || []).push({ n: n, r: r });
+  });
+  var html = "";
+  var keys = Object.keys(groups).map(Number).sort(function (a, b) { return a - b; });
+  [1, 2].forEach(function (j) {
+    if (j > tab.max_jumps) return;
+    if (groups[j]) html += tierHtml(j, groups[j], tab);
+    else html += '<section class="tier empty"><h2><span>' + j + " laden jump" + (j > 1 ? "s" : "") + "</span><span>no matching station sells this within " + fmt(Math.round(j * S.laden_ly * 100) / 100) + " Ly</span></h2></section>";
+  });
+  keys.forEach(function (j) { if (j > 2) html += tierHtml(j, groups[j], tab); });
+  document.getElementById("tiers").innerHTML = html;
+
+  var secs = Math.round((Date.now() - new Date(data.updated).getTime()) / 1000);
+  document.getElementById("dot").className = "dot" + (secs > 300 ? " stale" : "");
+  var t = new Date(data.updated);
+  document.getElementById("stamp").textContent = "checked " + t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " (" + (secs < 90 ? secs + " s" : Math.round(secs / 60) + " min") + " ago)";
+}
+
+function tierHtml(j, list, tab) {
+  var S = ship();
+  list = list.map(function (x) { x.score = score(x.r, ageNow(x.r)); return x; })
+    .sort(function (a, b) { return b.score - a.score || b.r.stock - a.r.stock; });
+  var total = list.reduce(function (s, x) { return s + x.r.stock; }, 0);
+  var rows = list.map(function (x) {
+    var r = x.r, d = r.stock - r.base;
+    var cls = d < 0 ? "down" : d > 0 ? "up" : "flat";
+    var dtxt = d === 0 ? "0" : (d > 0 ? "+" : "") + fmt(d);
+    var a = ageNow(r), loads = Math.floor(r.stock / S.cargo), chips = "";
+    if (loads < 5) chips += '<span class="chip low">LOW</span>';
+    if (a > 6) chips += '<span class="chip old">OLD DATA</span>';
+    if (r.ly / (j * S.laden_ly) > 0.97) chips += '<span class="chip low">TIGHT</span>';
+    if (r.ls != null && r.ls <= 50 && loads >= 50 && a <= 6) chips += '<span class="chip best">CLOSE TO STAR</span>';
+    return "<tr><td><span class=\"name\">" + esc(x.n) + "</span>" + chips + "<br><span class=\"sys\">" + esc(r.system) + "</span>" +
+      '<button class="copy' + (copied.sys === r.system && Date.now() < copied.until ? " done" : "") + '" type="button" data-sys="' + esc(r.system) + '" aria-label="Copy system name" title="' + (copied.sys === r.system && Date.now() < copied.until ? "Copied" : "Copy system name") + '">' + COPY_SVG + "</button></td>" +
+      "<td class=\"score\">" + Math.round(x.score) + "</td>" +
+      "<td>" + r.ly.toFixed(1) + "</td>" +
+      "<td>" + Math.ceil(r.ly / S.unladen_ly) + "</td>" +
+      "<td>" + (r.ls == null ? "?" : fmt(r.ls)) + "</td>" +
+      "<td>" + fmt(r.stock) + "</td>" +
+      "<td class=\"" + cls + "\">" + dtxt + "</td>" +
+      "<td>" + fmt(loads) + "</td>" +
+      "<td>" + fmt(r.price) + "</td>" +
+      "<td class=\"up\">" + (tab.cg ? fmt(tab.cg - r.price) : "-") + "</td>" +
+      "<td>" + ageText(a) + "</td></tr>";
+  }).join("");
+  return '<section class="tier"><h2><span>' + j + " laden jump" + (j > 1 ? "s" : "") + "</span><span>" + fmt(total) + " t across " + list.length + " station" + (list.length > 1 ? "s" : "") + "</span></h2>" +
+    '<div class="scroll"><table><thead><tr><th>Station</th><th title="Ranking score 0-100: plenty of loads, close to the star and fresh data score high. Rows are sorted by it.">Score</th><th title="Straight-line distance from the target">Ly</th><th title="Jumps from the target to the station, unladen">Out</th><th title="Distance from the arrival star">Ls</th><th title="Tonnes in stock">Stock</th><th title="Stock now minus stock at baseline">Change</th><th title="Stock divided by one full hold">Loads</th><th title="Buy price, Cr per tonne">Price</th><th title="CG price minus buy price, Cr per tonne">Margin</th><th title="How long ago the last market report came in">Age</th></tr></thead><tbody>' + rows + "</tbody></table></div></section>";
+}
+
+function load() {
+  fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("no data"); return r.json(); })
+    .then(function (j) { data = j; render(); })
+    .catch(function () { if (!data) document.getElementById("stamp").textContent = "no data yet"; });
+}
+document.getElementById("tiers").addEventListener("click", function (e) {
+  var b = e.target.closest(".copy");
+  if (!b) return;
+  var sys = b.getAttribute("data-sys");
+  copyText(sys).then(function () {
+    copied = { sys: sys, until: Date.now() + 1200 };
+    b.classList.add("done"); b.title = "Copied";
+    setTimeout(function () { b.classList.remove("done"); b.title = "Copy system name"; }, 1200);
+  }).catch(function () { b.title = "Copy failed"; });
+});
+
+load();
+setInterval(load, 10000);
+setInterval(render, 5000);
+</script>
+</body>
+</html>
