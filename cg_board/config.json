@@ -1,5 +1,6 @@
 {
   "title": "CG supply board",
+  "database_url": "postgresql+psycopg://elite_reader@localhost:5432/elite?passfile=C%3A%2FUsers%2FAbhijeet%2FAppData%2FLocal%2Felite-helper%2Fpgpass.conf",
   "port": 8765,
   "refresh_seconds": 30,
   "max_age_hours": 72,
