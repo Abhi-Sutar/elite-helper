@@ -136,6 +136,151 @@ class EconomyCase(unittest.TestCase):
         self.assertIn("Mine Hub", text)
 
 
+def world(name, id64, x, economy, second="None", factions=None, when=None, population=1000, allegiance="Federation",
+          government="Democracy", security="high", conflicts=None):
+    msg = sys_msg(factions or [fac("Alpha", 0.6), fac("Beta", 0.4)], when or at(1), id64=id64, name=name)
+    m = msg["message"]
+    m.update({"StarPos": [x, 0, 0], "SystemEconomy": f"$economy_{economy};", "SystemSecondEconomy": f"$economy_{second};",
+              "Population": population, "SystemAllegiance": allegiance, "SystemGovernment": f"$government_{government};",
+              "SystemSecurity": f"$system_security_{security};"})
+    if conflicts:
+        m["Conflicts"] = conflicts
+    return msg
+
+
+def station(market_id, name, system_name, economies, stype):
+    msg = market(market_id, name, system_name, economies)
+    msg["message"]["stationType"] = stype
+    return msg
+
+
+WAR = [{"WarType": "war", "Status": "active", "Faction1": {"Name": "Dela", "Stake": "", "WonDays": 1},
+        "Faction2": {"Name": "Delb", "Stake": "", "WonDays": 0}}]
+
+
+class FilterCase(unittest.TestCase):
+    """Exclusions and the other find_systems filters on a small world (the origin is Alpha)."""
+
+    def setUp(self):
+        self.s = new_session()
+        self.addCleanup(self.close)
+        feed = lambda m: store.apply_parsed(self.s, parsers.parse_message(m))   # noqa: E731
+        feed(world("Alpha", 1, 0, "Agri", factions=[fac("Grow", 0.5, pending=[("Expansion", 1)], band=1),
+                                                     fac("Rival", 0.5)]))
+        feed(world("Bravo", 2, 2, "Industrial",
+                   factions=[fac("Bravo Co", 0.6), fac("Brav2", 0.4, pending=[("Expansion", 0)])],
+                   government="Corporate"))
+        feed(world("Charlie", 3, 3, "Industrial", "Refinery",
+                   [fac("Chas", 0.7, pending=[("Expansion", 0)]), fac("Cb", 0.3)], allegiance="Empire"))
+        feed(world("Delta", 4, 4, "Agri",
+                   factions=[fac("Dela", 0.5, state="War", active=["War"], pending=[("Expansion", 0)]),
+                             fac("Delb", 0.5, state="War", active=["War"])],
+                   when=at(0.2), conflicts=WAR, security="low"))
+        feed(world("Echo", 5, 5, "Industrial",
+                   factions=[fac("Echo Corp", 0.8, state="Expansion", active=["Expansion"]), fac("Ech2", 0.2)],
+                   when=at(5), population=5_000_000, government="Corporate", security="low"))
+        feed(station(20, "A Port", "Alpha", ["Agri"], "Coriolis"))
+        feed(station(21, "B Outpost", "Bravo", ["Industrial", "Extraction"], "Outpost"))
+        store.link_markets_to_systems(self.s)
+        for id64 in range(1, 6):                      # EDSM has been asked for every system: station filters apply
+            store.replace_stations(self.s, id64, [])
+        self.s.commit()
+
+    def close(self):
+        engine = self.s.get_bind()
+        self.s.close()
+        engine.dispose()
+
+    def names(self, **kw):
+        res = queries.find_systems(self.s, **kw)
+        self.assertNotIn("error", res, res)
+        return [r["system"] for r in res["results"]]
+
+    def test_the_agri_or_industrial_expansion_query_without_extraction_or_refinery(self):
+        q = dict(economies=["Agricultural", "Industrial"], faction_state="Expansion", state_in="pending", near="Alpha")
+        self.assertEqual(self.names(**q), ["Alpha", "Bravo", "Charlie", "Delta"])
+        # Bravo has an Extraction station, Charlie a Refinery second economy
+        self.assertEqual(self.names(exclude_economies=["Extraction", "Refinery"], **q), ["Alpha", "Delta"])
+        self.assertEqual(self.names(exclude_economies="extraction,refinery", exclude_scope="system", **q),
+                         ["Alpha", "Bravo", "Delta"])
+        self.assertEqual(self.names(exclude_economies="Extraction", exclude_scope="station", **q),
+                         ["Alpha", "Charlie", "Delta"])
+
+    def test_exclude_states_systems_and_population(self):
+        self.assertEqual(self.names(economies="Agri", exclude_states="War"), ["Alpha"])   # Delta has factions at war
+        self.assertEqual(self.names(economies="Agri", exclude_states="Expansion", exclude_states_in="pending"), [])
+        self.assertEqual(self.names(economies="Industrial", exclude_systems=["bravo", "Echo"]), ["Charlie"])
+        self.assertEqual(self.names(max_population=10_000, near="Alpha"), ["Alpha", "Bravo", "Charlie", "Delta"])
+        self.assertEqual(self.names(min_population=100_000), ["Echo"])
+
+    def test_allegiance_government_security_and_conflict(self):
+        self.assertEqual(self.names(allegiance="empire"), ["Charlie"])
+        self.assertEqual(self.names(government="Corporate", near="Alpha"), ["Bravo", "Echo"])
+        self.assertEqual(self.names(security=["low"], near="Alpha"), ["Delta", "Echo"])
+        self.assertEqual(self.names(in_conflict=True), ["Delta"])
+        self.assertNotIn("Delta", self.names(in_conflict=False))
+        self.assertEqual(self.names(conflict_type="War"), ["Delta"])
+        self.assertEqual(self.names(conflict_type="Election"), [])
+        self.assertEqual(queries.find_systems(self.s, in_conflict=True)["results"][0]["conflict_types"], ["war"])
+
+    def test_faction_criteria_must_hold_for_the_same_faction(self):
+        res = queries.find_systems(self.s, faction_state="Expansion", state_in="pending",
+                                   min_influence=45, max_influence=55)
+        self.assertEqual([r["system"] for r in res["results"]], ["Alpha", "Delta"])   # Bravo 40% and Charlie 70% fall out
+        self.assertEqual(self.names(faction_state="Expansion", state_in="pending", min_influence=65), ["Charlie"])
+        self.assertEqual(self.names(faction_state="Expansion", state_in="active", min_influence=65), ["Echo"])
+        self.assertEqual(sorted(self.names(faction_state="Expansion", state_in="pending", controlling_only=True)),
+                         ["Alpha", "Charlie", "Delta"])                                # Bravo's pending is not controlling
+        self.assertEqual(self.names(faction_name="echo corp"), ["Echo"])
+        self.assertEqual(self.names(faction_name="Echo"), [])                          # exact name, not a prefix
+        self.assertEqual(self.names(faction_state="Expansion", state_in="pending", state_trend=1), ["Alpha"])
+        grow = queries.find_systems(self.s, faction_name="Grow")["results"][0]["matching_factions"][0]
+        self.assertEqual(self.names(faction_name="Grow", happiness=[grow["happiness"]]), ["Alpha"])
+        self.assertEqual(self.names(faction_name="Grow", happiness=["NotAMood"]), [])
+
+    def test_station_filters(self):
+        self.assertEqual(self.names(min_stations=1, near="Alpha"), ["Alpha", "Bravo"])
+        self.assertEqual(self.names(station_types="coriolis"), ["Alpha"])
+        self.assertEqual(self.names(station_types=["outpost", "coriolis"], near="Alpha"), ["Alpha", "Bravo"])
+        self.assertEqual(self.names(min_stations=2), [])
+
+    def test_sorting(self):
+        self.assertEqual(self.names(sort="population")[0], "Echo")
+        self.assertEqual(self.names(sort="name"), ["Alpha", "Bravo", "Charlie", "Delta", "Echo"])
+        self.assertEqual(self.names(sort="freshest")[0], "Delta")
+        self.assertEqual(self.names(sort="freshest")[-1], "Echo")
+        self.assertEqual(self.names(faction_state="Expansion", sort="influence")[0], "Echo")   # 80% beats 70%, 50%
+        self.assertEqual(self.names(near="Alpha")[:2], ["Alpha", "Bravo"])                      # distance is the default
+
+    def test_bad_arguments(self):
+        for kw in ({"sort": "random"}, {"exclude_scope": "galaxy"}, {"exclude_states_in": "soon"}, {"state_trend": 1}):
+            self.assertIn("error", queries.find_systems(self.s, **kw), kw)
+
+    def test_cli_and_mcp_pass_the_new_options_through(self):
+        def run(*argv):
+            args = cli.build_parser().parse_args(argv)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                args.func(args, self.s)
+            return out.getvalue()
+
+        data = json.loads(run("find-systems", "--economy", "Agricultural,Industrial", "--state", "Expansion",
+                              "--state-in", "pending", "--exclude-economy", "Extraction,Refinery", "--near", "Alpha",
+                              "--json"))
+        self.assertEqual([r["system"] for r in data["results"]], ["Alpha", "Delta"])
+        self.assertEqual(data["criteria"]["exclude_economies"], ["extraction", "refinery"])
+        data = json.loads(run("find-systems", "--conflict", "yes", "--security", "low", "--sort", "name", "--json"))
+        self.assertEqual([r["system"] for r in data["results"]], ["Delta"])
+        self.assertIn("Alpha", run("find-systems", "--faction", "Grow", "--min-influence", "40"))
+
+        from eddn_helper import mcp_server
+        with mock.patch.object(mcp_server, "_run", side_effect=lambda fn, *a, **k: fn(self.s, *a, **k)):
+            res = mcp_server.find_systems(economies=["Agri", "Industrial"], faction_state="Expansion",
+                                          state_in="pending", exclude_economies=["Extraction", "Refinery"],
+                                          near="Alpha")
+        self.assertEqual([r["system"] for r in res["results"]], ["Alpha", "Delta"])
+
+
 EDSM = {
     "/api-v1/system": {"id64": 99, "name": "Zed", "coords": {"x": 1, "y": 2, "z": 3},
                        "information": {"population": 5000, "allegiance": "Empire", "government": "Dictatorship",
