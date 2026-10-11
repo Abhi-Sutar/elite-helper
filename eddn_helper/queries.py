@@ -780,3 +780,181 @@ def data_status(session):
             "last_message_minutes_ago": round((time.time() - int(last_msg)) / 60, 1) if last_msg else None,
             "listener_heartbeat_minutes_ago": hb_age,
             "listener_running": running, "listener_pid": pid}
+
+
+# ---- economies and system search ---------------------------------------------------------------------------------
+
+_KEY_ALIASES = {"agriculture": "agri"}
+
+
+def norm_key(text):
+    """'High Tech' / 'hightech' / 'HighTech' -> 'hightech'; 'Agriculture' -> 'agri'. Used for economies and states."""
+    key = re.sub(r"[\s_\-]+", "", str(text or "")).lower()
+    return _KEY_ALIASES.get(key, key)
+
+
+def _as_list(value):
+    """Accept a list or a comma separated string."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.split(",")
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _system_markets(session, system_ids=None, include_carriers=False):
+    """{system_id64: [Market]}; a market belongs to its system_id64 or, when unlinked, to the system of that name."""
+    q = (select(Market, func.coalesce(Market.system_id64, System.id64).label("sid"))
+         .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name)))
+    if not include_carriers:
+        q = q.where(Market.is_carrier.is_(False))
+    out = {}
+    for m, sid in session.execute(q):
+        if sid is not None and (system_ids is None or sid in system_ids):
+            out.setdefault(sid, []).append(m)
+    return out
+
+
+def _station_dict(m):
+    return {"station": m.station, "station_type": m.station_type, "is_carrier": bool(m.is_carrier),
+            "economies": m.economies or [], "market_age_hours": age_hours(m.updated_at)}
+
+
+def system_economy(session, name):
+    """A system's economy and second economy plus its stations (type, station economies). Snapshot only."""
+    s = find_system(session, name)
+    if s is None:
+        return {"found": False, "system": name}
+    markets = _system_markets(session, {s.id64}, include_carriers=True).get(s.id64, [])
+    markets.sort(key=lambda m: (bool(m.is_carrier), m.station.lower()))
+    return {"found": True, "system": s.name, "id64": s.id64, "economy": s.economy, "second_economy": s.second_economy,
+            "population": s.population, "allegiance": s.allegiance, "government": s.government,
+            "info_updated_at": iso(s.updated_at), "info_age_hours": age_hours(s.updated_at), "source": s.source,
+            "stations": [_station_dict(m) for m in markets]}
+
+
+def _faction_state_hits(f, state_key, state_in):
+    """Where a faction has the given state: [{'in': 'state'|'active'|'pending'|'recovering', 'trend': ...}]
+    ('state' = its main FactionState; trend is only set for pending/recovering states)."""
+    hits = []
+    if state_in in ("any", "state") and norm_key(f.state) == state_key:
+        hits.append({"in": "state", "trend": None})
+    for slot, items in (("active", f.active_states), ("pending", f.pending_states), ("recovering", f.recovering_states)):
+        if state_in in ("any", slot):
+            hits += [{"in": slot, "trend": s["trend"]} for s in _state_items(items) if norm_key(s["state"]) == state_key]
+    return hits
+
+
+def find_systems(session, economies=None, economy_scope="system", include_second=True, faction_state=None,
+                 state_in="any", controlling_only=False, near=None, ly=None, min_population=0,
+                 demand_commodities=None, include_carrier_markets=False, max_age_hours=None, limit=20):
+    """
+    Systems matching ALL given criteria, nearest first (or most populated first without `near`).
+      economies        - names, e.g. ['Extraction', 'Refinery'] (case/space-insensitive; any of them matches)
+      economy_scope    - 'system' (system economy and, with include_second, second economy), 'station' (any station's
+                         economy list) or 'any'
+      faction_state    - e.g. 'Expansion'; state_in: 'any' (main state or any list), 'state', 'active', 'pending' or
+                         'recovering'; controlling_only restricts it to the controlling faction
+      demand_commodities - keep systems with a station that currently has demand for any of these commodities
+    Snapshot data: only systems the listener (or a live lookup) has seen, as fresh as the age fields say.
+    """
+    if economy_scope not in ("system", "station", "any"):
+        return {"error": "economy_scope must be 'system', 'station' or 'any'"}
+    if state_in not in ("any", "state", "active", "pending", "recovering"):
+        return {"error": "state_in must be 'any', 'state', 'active', 'pending' or 'recovering'"}
+    origin, err = _resolve_origin(session, near)
+    if err:
+        return err
+    eco_keys = {norm_key(e) for e in _as_list(economies)}
+    state_key = norm_key(faction_state) if faction_state else None
+    commodities = [norm_commodity(c) for c in _as_list(demand_commodities)]
+
+    markets = _system_markets(session, None, include_carriers=include_carrier_markets)
+    station_hits = {}
+    if eco_keys and economy_scope in ("station", "any"):
+        for sid, ms in markets.items():
+            hit = [m for m in ms if eco_keys & {norm_key(e) for e in (m.economies or [])}]
+            if hit:
+                station_hits[sid] = hit
+
+    q = select(System)
+    if min_population:
+        q = q.where(System.population >= min_population)
+    if max_age_hours is not None:
+        q = q.where(func.coalesce(System.factions_updated_at, System.updated_at) >= _fresh_cutoff(max_age_hours))
+    if origin is not None and ly is not None and None not in (origin["x"], origin["y"], origin["z"]):
+        q = q.where(System.x.between(origin["x"] - ly, origin["x"] + ly),
+                    System.y.between(origin["y"] - ly, origin["y"] + ly),
+                    System.z.between(origin["z"] - ly, origin["z"] + ly))
+    if eco_keys and economy_scope == "station":
+        q = q.where(System.id64.in_(list(station_hits) or [-1]))
+
+    candidates = []
+    for s in session.execute(q).scalars():
+        d = distance(origin, {"x": s.x, "y": s.y, "z": s.z}) if origin is not None else None
+        if origin is not None and (d is None or (ly is not None and d > ly)):
+            continue
+        matched = None
+        if eco_keys:
+            if economy_scope in ("system", "any") and norm_key(s.economy) in eco_keys:
+                matched = "economy"
+            elif economy_scope in ("system", "any") and include_second and norm_key(s.second_economy) in eco_keys:
+                matched = "second_economy"
+            elif economy_scope in ("station", "any") and s.id64 in station_hits:
+                matched = "station"
+            if matched is None:
+                continue
+        candidates.append((s, d, matched))
+
+    faction_hits = {}
+    if state_key:
+        ids = [s.id64 for s, _, _ in candidates]
+        for i in range(0, len(ids), 500):
+            fq = select(Faction).where(Faction.system_id64.in_(ids[i:i + 500]))
+            if controlling_only:
+                fq = fq.where(Faction.is_controlling.is_(True))
+            for f in session.execute(fq).scalars():
+                hits = _faction_state_hits(f, state_key, state_in)
+                if hits:
+                    faction_hits.setdefault(f.system_id64, []).append(
+                        {"faction": f.name, "influence_pct": _pct(f.influence), "state": f.state,
+                         "found_in": hits, "is_controlling": bool(f.is_controlling)})
+        candidates = [c for c in candidates if c[0].id64 in faction_hits]
+
+    demand_rows = {}
+    if commodities:
+        ids = {s.id64 for s, _, _ in candidates}
+        fresh = _fresh_cutoff(48 if max_age_hours is None else max_age_hours)
+        dq = (select(Commodity.symbol, CommodityPrice.demand, CommodityPrice.sell_price, Market.station,
+                     func.coalesce(Market.system_id64, System.id64).label("sid"))
+              .select_from(CommodityPrice)
+              .join(Market, Market.market_id == CommodityPrice.market_id)
+              .join(Commodity, Commodity.id == CommodityPrice.commodity_id)
+              .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name))
+              .where(Commodity.symbol.in_(commodities), CommodityPrice.demand > 0,
+                     func.coalesce(CommodityPrice.seen_at, Market.updated_at) >= fresh))
+        if not include_carrier_markets:
+            dq = dq.where(Market.is_carrier.is_(False))
+        for sym, demand, sell, station, sid in session.execute(dq):
+            if sid in ids:
+                demand_rows.setdefault(sid, []).append(
+                    {"commodity": sym, "station": station, "demand": demand, "sell_price": sell})
+        candidates = [c for c in candidates if c[0].id64 in demand_rows]
+
+    candidates.sort(key=lambda c: (c[1] is None, c[1] if c[1] is not None else 0, -(c[0].population or 0), c[0].name))
+    results = []
+    for s, d, matched in candidates[:limit]:
+        results.append({
+            "system": s.name, "distance_ly": round(d, 1) if d is not None else None, "population": s.population,
+            "economy": s.economy, "second_economy": s.second_economy, "matched_economy": matched,
+            "matching_factions": faction_hits.get(s.id64, []),
+            "stations": [_station_dict(m) for m in sorted(markets.get(s.id64, []), key=lambda m: m.station.lower())],
+            "demand": sorted(demand_rows.get(s.id64, []), key=lambda r: -(r["demand"] or 0)),
+            "factions_age_hours": age_hours(s.factions_updated_at), "info_age_hours": age_hours(s.updated_at),
+            "source": s.source})
+    return {"criteria": {"economies": sorted(eco_keys), "economy_scope": economy_scope, "include_second": include_second,
+                         "faction_state": faction_state, "state_in": state_in, "controlling_only": controlling_only,
+                         "min_population": min_population, "demand_commodities": commodities, "ly": ly,
+                         "max_age_hours": max_age_hours},
+            "origin": near, "count": len(candidates), "shown": len(results), "results": results,
+            "note": "snapshot of systems seen by the listener or a live lookup; check the age fields"}

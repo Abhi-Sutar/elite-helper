@@ -86,6 +86,22 @@ def fetch_system(session, name):
     return True
 
 
+def _station_economies(s):
+    """EDSM repeats the economy when a station has no second one: ['Refinery', 'Refinery'] -> ['Refinery']."""
+    return list(dict.fromkeys(e for e in (s.get("economy"), s.get("secondEconomy")) if e))
+
+
+def fetch_stations(system):
+    """EDSM's station list for a system as plain dicts (not stored: our `markets` table needs a market)."""
+    data = _get("/api-system-v1/stations", systemName=system)
+    stations = data.get("stations") if isinstance(data, dict) else None
+    return [{"station": s.get("name"), "station_type": s.get("type"),
+             "economies": _station_economies(s),
+             "has_market": bool(s.get("haveMarket")), "market_id": s.get("marketId"),
+             "distance_to_arrival_ls": s.get("distanceToArrival")}
+            for s in stations or [] if s.get("name")]
+
+
 def fetch_market(session, station, system=None):
     """Fetch a station's market from EDSM (needs the system name). Returns True if stored."""
     if not system:
@@ -105,7 +121,7 @@ def fetch_market(session, station, system=None):
         "market_id": match["marketId"], "station": match["name"], "system_name": data.get("name", system),
         "timestamp": ts, "station_type": match.get("type"),
         "is_carrier": match.get("type") == "Fleet Carrier" or bool(parsers.CARRIER_RE.match(match["name"])),
-        "economies": [e for e in (match.get("economy"), match.get("secondEconomy")) if e],
+        "economies": _station_economies(match),
         "prohibited": [],
     }
     prices = [{

@@ -129,6 +129,25 @@ def faction_csv(d):
 
 TIMELINE_COLUMNS = ["field", "value", "trend", "start", "last_seen", "ended_at"]
 
+def hits_text(f):
+    """'active, pending (trend 1)': where the searched state was found for one faction."""
+    return ", ".join(h["in"] + (f" (trend {h['trend']})" if h["trend"] is not None else "") for h in f["found_in"])
+
+
+SYSTEMS_COLUMNS = ["system", "distance_ly", "population", "economy", "second_economy", "matched_economy", "factions",
+                   "stations", "demand", "factions_age_hours"]
+
+
+def systems_csv(d):
+    rows = []
+    for r in d.get("results", []) if "error" not in d else []:
+        rows.append(dict(
+            r, factions="; ".join(f"{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
+                                  for f in r["matching_factions"]),
+            stations="; ".join(f"{s['station']} [{'/'.join(s['economies'])}]" for s in r["stations"]),
+            demand="; ".join(f"{x['commodity']}@{x['station']} {x['demand']}" for x in r["demand"])))
+    return SYSTEMS_COLUMNS, rows
+
 
 def not_found(what):
     print(f"{what}: not found in the local database. Is the listener running "
@@ -209,6 +228,60 @@ def cmd_system(args, session):
         if d.get("live_error"):
             print(f"live lookup error: {d['live_error']}", file=sys.stderr)
     emit(args, res, human)
+
+
+def cmd_economy(args, session):
+    res = live.system_economy(session, args.name, args.live, args.max_age_hours)
+
+    def human(d):
+        if not d["found"]:
+            return not_found(f"System '{d['system']}'")
+        print(f"{d['system']}  economy={d['economy'] or '-'} / {d['second_economy'] or '-'}  pop={d['population'] or 0:,}  "
+              f"(data {fmt_age(d['info_age_hours'])} old, source: {d['source']})")
+        table(d["stations"], [("Station", "station"), ("Type", lambda r: r["station_type"] or "-"),
+                              ("Economies", lambda r: "/".join(r["economies"]) or "-"),
+                              ("Carrier", lambda r: "yes" if r["is_carrier"] else ""),
+                              ("Market age", lambda r: fmt_age(r["market_age_hours"]))])
+        if d.get("stations_live"):
+            print("\nAlso listed by EDSM (no market stored locally):")
+            table(d["stations_live"], [("Station", "station"), ("Type", lambda r: r["station_type"] or "-"),
+                                       ("Economies", lambda r: "/".join(r["economies"]) or "-")])
+        if d.get("live_error"):
+            print(f"live lookup error: {d['live_error']}", file=sys.stderr)
+    emit(args, res, human)
+
+
+def cmd_find_systems(args, session):
+    res = queries.find_systems(
+        session, args.economy, args.economy_scope, not args.no_second, args.state, args.state_in,
+        args.controlling_only, args.near, args.ly, args.min_pop, args.demand, args.carriers, args.max_age_hours,
+        args.limit)
+
+    def human(d):
+        if "error" in d:
+            print(d["error"], file=sys.stderr)
+            return
+        print(f"{d['count']} matching systems" + (f" (showing {d['shown']})" if d["shown"] < d["count"] else ""))
+        if not d["results"]:
+            return
+
+        def factions(r):
+            return "; ".join(f"{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
+                             for f in r["matching_factions"]) or "-"
+
+        def economy(r):
+            extra = f" ({r['matched_economy']})" if r["matched_economy"] not in (None, "economy") else ""
+            return f"{r['economy'] or '-'}/{r['second_economy'] or '-'}{extra}"
+        cols = [("System", "system"), ("Ly", lambda r: r["distance_ly"] if r["distance_ly"] is not None else "-"),
+                ("Pop", lambda r: f"{r['population']:,}" if r["population"] else "-"), ("Economy", economy)]
+        if args.state:
+            cols.append(("Factions", factions))
+        cols += [("Stations", lambda r: len(r["stations"])),
+                 ("Faction age", lambda r: fmt_age(r["factions_age_hours"]))]
+        if args.demand:
+            cols.append(("Demand", lambda r: ", ".join(f"{x['commodity']}@{x['station']}" for x in r["demand"][:3])))
+        table(d["results"], cols)
+    emit(args, res, human, systems_csv)
 
 
 def print_factions(factions):
@@ -482,7 +555,7 @@ def build_parser():
         sp = sub.add_parser(name, help=help_, description=help_)
         sp.set_defaults(func=fn)
         sp.add_argument("--json", action="store_true", help="machine-readable JSON output")
-        if name in ("price-history", "factions", "timeline", "traffic", "busiest"):
+        if name in ("price-history", "factions", "timeline", "traffic", "busiest", "find-systems"):
             sp.add_argument("--csv", action="store_true", help="CSV on stdout (redirect to a file for charting)")
         if live_opt:
             sp.add_argument("--live", action="store_true", help="query EDSM if local data is missing or stale")
@@ -562,6 +635,26 @@ def build_parser():
     sp.add_argument("--to", dest="dest", required=True, help="destination database URL (must be migrated to head)")
     sp = add("prune", cmd_prune, "Delete commodity data older than N days (the listener also does this hourly)")
     sp.add_argument("--days", type=int, default=store.RETENTION_DAYS)
+    sp = add("economy", cmd_economy, "A system's economy and second economy plus its stations and station economies",
+             live_opt=True)
+    sp.add_argument("name", metavar="SYSTEM")
+    sp = add("find-systems", cmd_find_systems,
+             "Find systems by economy, faction state (e.g. Expansion), distance and commodity demand")
+    sp.add_argument("--economy", help="comma separated, any of them matches (e.g. Extraction,Refinery,Industrial)")
+    sp.add_argument("--economy-scope", choices=["system", "station", "any"], default="system",
+                    help="match the system economy (default), station economies, or either")
+    sp.add_argument("--no-second", action="store_true", help="ignore the system's second economy")
+    sp.add_argument("--state", help="faction state to look for, e.g. Expansion")
+    sp.add_argument("--state-in", choices=["any", "state", "active", "pending", "recovering"], default="any",
+                    help="where the state must be: main state, active, pending or recovering list (default any)")
+    sp.add_argument("--controlling-only", action="store_true", help="only the controlling faction counts")
+    sp.add_argument("--near", metavar="SYSTEM", help="measure distance from this system")
+    sp.add_argument("--ly", type=float, help="max distance from --near")
+    sp.add_argument("--min-pop", type=int, default=0, help="minimum system population")
+    sp.add_argument("--demand", help="comma separated commodities a station must currently demand (any of them)")
+    sp.add_argument("--carriers", action="store_true", help="include fleet carrier markets")
+    sp.add_argument("--max-age-hours", type=float, help="ignore systems whose data is older than this")
+    sp.add_argument("--limit", type=int, default=20)
     sp = add("commodity", cmd_commodity, "Best places to sell (--sell) or buy (--buy) a commodity")
     sp.add_argument("name")
     g = sp.add_mutually_exclusive_group(required=True)
