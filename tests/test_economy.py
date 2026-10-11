@@ -5,7 +5,10 @@ import json
 import unittest
 from unittest import mock
 
+from sqlalchemy import delete, select
+
 from eddn_helper import cli, external, live, parsers, queries, store
+from eddn_helper.models import Station, StationSync
 from helpers import new_session
 from test_eddn_helper import commodity_msg
 from test_traffic import at, fac, sys_msg
@@ -279,6 +282,208 @@ class FilterCase(unittest.TestCase):
                                           state_in="pending", exclude_economies=["Extraction", "Refinery"],
                                           near="Alpha")
         self.assertEqual([r["system"] for r in res["results"]], ["Alpha", "Delta"])
+
+
+def edsm_station(name, stype, economy, faction, body=None, market=True, market_id=None, second=None):
+    s = {"id": abs(hash(name)) % 10**6, "marketId": market_id, "type": stype, "name": name,
+         "distanceToArrival": 26, "allegiance": "Federation", "government": "Democracy", "economy": economy,
+         "secondEconomy": second, "haveMarket": market, "haveShipyard": False, "haveOutfitting": False,
+         "otherServices": ["Refuel"], "updateTime": {"information": "2026-10-09 21:39:05"}}
+    if body:
+        s["body"] = {"id": 1, "name": body, "latitude": 1.0, "longitude": 2.0}
+    if faction:
+        s["controllingFaction"] = {"id": 5, "name": faction}
+    return s
+
+
+HUB_EDSM = {"id": 1, "id64": 7, "name": "Hub", "stations": [
+    edsm_station("Hub Orbis", "Orbis Starport", "Industrial", "Grow", "Hub A 1", market_id=900),
+    edsm_station("Evans Farm", "Odyssey Settlement", "Agriculture", "Grow", "Hub B 3", market_id=901),
+    edsm_station("Mouhot Prospect", "Planetary Outpost", "Colony", "Rival", "Hub B 3", market=False),
+    edsm_station("Pit Stop", "Outpost", "Extraction", "Grow", market_id=902, second="Extraction"),
+    edsm_station("ABC-123", "Fleet Carrier", "Fleet Carrier", None, market_id=903),
+    edsm_station("No Owner", "Odyssey Settlement", "Tourism", None, "Hub B 3")]}
+
+
+class StationCase(unittest.TestCase):
+    """EDSM station data: storage, settlements, controlling faction, unknown systems, CLI/MCP plumbing."""
+
+    def setUp(self):
+        self.s = new_session()
+        self.addCleanup(self.close)
+        feed = lambda m: store.apply_parsed(self.s, parsers.parse_message(m))   # noqa: E731
+        feed(world("Hub", 7, 0, "Agri", factions=[fac("Grow", 0.6, pending=[("Expansion", 0)]), fac("Rival", 0.4)]))
+        feed(world("Lonely", 8, 3, "Agri", factions=[fac("Solo", 0.9, pending=[("Expansion", 0)]), fac("Two", 0.1)]))
+        feed(market(40, "Hub Orbis", "Hub", ["Refinery"]))                   # a local market for a station EDSM also lists
+        store.link_markets_to_systems(self.s)
+        self.s.commit()
+
+    def close(self):
+        engine = self.s.get_bind()
+        self.s.close()
+        engine.dispose()
+
+    def refresh(self, payload=HUB_EDSM, name="Hub"):
+        with mock.patch.object(external, "_get", side_effect=lambda path, **p: payload):
+            return external.refresh_stations(self.s, name)
+
+    def test_refresh_stores_everything_but_carriers(self):
+        self.assertEqual(self.refresh(), 5)
+        rows = {r.name: r for r in self.s.execute(select(Station)).scalars()}
+        self.assertEqual(sorted(rows), ["Evans Farm", "Hub Orbis", "Mouhot Prospect", "No Owner", "Pit Stop"])
+        self.assertNotIn("ABC-123", rows)
+        self.assertEqual(rows["Evans Farm"].controlling_faction, "Grow")
+        self.assertEqual(rows["Evans Farm"].body, "Hub B 3")
+        self.assertEqual(rows["Pit Stop"].economy, "Extraction")
+        self.assertIsNone(rows["No Owner"].controlling_faction)
+        sync = self.s.execute(select(StationSync)).scalar_one()
+        self.assertEqual((sync.system_id64, sync.station_count), (7, 5))
+
+    def test_refresh_replaces_and_a_system_without_stations_is_still_known(self):
+        self.refresh()
+        smaller = dict(HUB_EDSM, stations=HUB_EDSM["stations"][:1])
+        self.assertEqual(self.refresh(smaller), 1)
+        self.assertEqual([r.name for r in self.s.execute(select(Station)).scalars()], ["Hub Orbis"])
+        self.assertEqual(self.refresh(dict(HUB_EDSM, stations=[])), 0)
+        self.assertEqual(self.s.execute(select(StationSync.station_count)).scalar_one(), 0)
+        d = queries.system_economy(self.s, "Hub")
+        self.assertTrue(d["stations_known"])
+        self.assertEqual([x["station"] for x in d["stations"]], ["Hub Orbis"])   # the market upload is still listed
+
+    def test_unknown_system_or_not_in_database_is_not_stored(self):
+        self.assertIsNone(self.refresh({}, "Hub"))                                  # EDSM does not know it
+        self.assertIsNone(self.refresh(dict(HUB_EDSM, id64=999), "Hub"))            # not in our systems table
+
+    def test_settlements_and_planetary_outposts_are_ordinary_stations(self):
+        self.refresh()
+        for types, expected in (("settlement", ["Evans Farm", "No Owner"]), (["settlements"], ["Evans Farm", "No Owner"]),
+                                ("planetary", ["Mouhot Prospect"]), ("surface", ["Evans Farm", "Mouhot Prospect", "No Owner"]),
+                                ("outpost", ["Mouhot Prospect", "Pit Stop"]), ("orbis", ["Hub Orbis"])):
+            res = queries.find_systems(self.s, station_types=types, faction_state="Expansion", state_in="pending",
+                                       near="Hub", ly=1)
+            hub = res["results"][0]
+            self.assertEqual(hub["system"], "Hub")
+            kept = [st["station"] for st in hub["stations"]
+                    if queries.station_matches_types(st, {queries.norm_key(t) for t in queries._as_list(types)})]
+            self.assertEqual(sorted(kept), expected, types)
+        self.assertEqual(queries.station_category("Odyssey Settlement"), "surface_settlement")
+        self.assertEqual(queries.station_category("OnFootSettlement"), "surface_settlement")
+        self.assertEqual(queries.station_category("Planetary Outpost"), "planetary_outpost")
+        self.assertEqual(queries.station_category("CraterPort"), "planetary_port")
+        self.assertEqual(queries.station_category("Outpost"), "outpost")
+        self.assertEqual(queries.station_category("Coriolis Starport"), "starport")
+        self.assertEqual(queries.station_category("Fleet Carrier"), "carrier")
+        # min_stations counts settlements and outposts, not just starports
+        hub = lambda **kw: [r["system"] for r in queries.find_systems(self.s, economies="Agri", near="Hub", ly=1, **kw)["results"]]  # noqa: E731
+        self.assertEqual(hub(min_stations=5), ["Hub"])        # 5 stations: orbis, settlement x2, planetary outpost, outpost
+        self.assertEqual(hub(min_stations=6), [])
+
+    def test_unknown_systems_are_flagged_not_rejected_known_ones_are_filtered(self):
+        # before any refresh nothing is known: station filters let everything through, flagged
+        res = queries.find_systems(self.s, economies="Agri", min_stations=3, station_types="settlement")
+        self.assertEqual(sorted(r["system"] for r in res["results"]), ["Hub", "Lonely"])
+        self.assertEqual(res["stations_unknown"], 2)
+        self.assertIn("refresh-stations", res["note"])
+        self.assertFalse(res["results"][0]["stations_known"])
+        # after refreshing Hub it is judged on its stations, Lonely is still only flagged
+        self.refresh()
+        res = queries.find_systems(self.s, economies="Agri", min_stations=6)
+        self.assertEqual([r["system"] for r in res["results"]], ["Lonely"])
+        res = queries.find_systems(self.s, economies="Agri", min_stations=5, station_types="settlement")
+        self.assertEqual(sorted(r["system"] for r in res["results"]), ["Hub", "Lonely"])
+        self.assertEqual(res["stations_unknown"], 1)
+        self.assertEqual(res["unknown_systems"], ["Lonely"])
+
+    def test_exclusion_sees_a_known_extraction_station_even_when_other_systems_are_unknown(self):
+        self.refresh()
+        names = [r["system"] for r in queries.find_systems(self.s, economies="Agri", exclude_economies="Extraction")["results"]]
+        self.assertEqual(names, ["Lonely"])                                         # Hub's Pit Stop is Extraction
+
+    def test_controlling_faction_of_stations(self):
+        self.refresh()
+        res = queries.find_systems(self.s, faction_state="Expansion", state_in="pending", near="Hub", ly=5)
+        hub = next(r for r in res["results"] if r["system"] == "Hub")
+        self.assertEqual(hub["stations_by_faction"], {"Grow": 3, "Rival": 1})
+        self.assertEqual(hub["matching_factions"][0]["stations_controlled"], 3)
+        flagged = {st["station"]: st["controlled_by_matching_faction"] for st in hub["stations"]}
+        self.assertEqual(flagged, {"Evans Farm": True, "Hub Orbis": True, "Pit Stop": True, "Mouhot Prospect": False,
+                                   "No Owner": False})
+        merged = next(st for st in hub["stations"] if st["station"] == "Hub Orbis")
+        self.assertEqual((merged["source"], merged["has_prices"], merged["economies"]), ("both", True, ["Industrial", "Refinery"]))
+        self.assertEqual(self.names_of(min_faction_stations=3), ["Hub", "Lonely"])         # Lonely unknown -> kept
+        self.assertEqual(self.names_of(min_faction_stations=4), ["Lonely"])
+
+    def names_of(self, **kw):
+        res = queries.find_systems(self.s, faction_state="Expansion", state_in="pending", **kw)
+        return sorted(r["system"] for r in res["results"])
+
+    def test_faction_stations_query(self):
+        self.refresh()
+        res = queries.faction_stations(self.s, "grow")
+        self.assertEqual(res["count"], 3)
+        self.assertEqual(sorted(r["station"] for r in res["stations"]), ["Evans Farm", "Hub Orbis", "Pit Stop"])
+        res = queries.faction_stations(self.s, "Grow", station_types="settlement")
+        self.assertEqual([r["station"] for r in res["stations"]], ["Evans Farm"])
+        self.assertEqual(queries.faction_stations(self.s, "Grow", near="Lonely", ly=1)["count"], 0)
+        self.assertEqual(queries.faction_stations(self.s, "Nobody")["count"], 0)
+        self.assertIn("error", queries.faction_stations(self.s, "Grow", near="Nowhere"))
+
+    def test_cli_refresh_and_find_systems_refresh(self):
+        def run(*argv):
+            args = cli.build_parser().parse_args(argv)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                args.func(args, self.s)
+            return out.getvalue(), err.getvalue()
+
+        with mock.patch.object(external, "_get", side_effect=lambda path, **p: HUB_EDSM):
+            _, err = run("refresh-stations", "Hub")
+            self.assertIn("Hub: 5 stations stored", err)
+            _, err = run("refresh-stations", "Atlantis")                              # unknown to the payload's system id
+            self.assertIn("Atlantis", err)
+        text, _ = run("faction-stations", "Grow", "--station-type", "settlement")
+        self.assertIn("Evans Farm", text)
+        self.assertNotIn("Hub Orbis", text)
+        text, _ = run("economy", "Hub")
+        self.assertIn("Controlled by", text)
+        self.assertIn("Odyssey Settlement", text)
+        self.assertNotIn("ABC-123", text)
+
+        # --refresh-stations fetches only the unknown result systems, in result order, within the budget
+        self.s.execute(delete(StationSync.__table__))
+        self.s.execute(delete(Station.__table__))
+        self.s.commit()
+        payloads = {"Hub": HUB_EDSM, "Lonely": {"id64": 8, "name": "Lonely", "stations": []}}
+        calls = []
+
+        def fake(path, **p):
+            calls.append(p["systemName"])
+            return payloads[p["systemName"]]
+
+        with mock.patch.object(external, "_get", side_effect=fake):
+            out, err = run("find-systems", "--economy", "Agri", "--refresh-stations", "--refresh-limit", "1",
+                           "--near", "Hub", "--json")
+        self.assertEqual(calls, ["Hub"])                                              # budget of one system
+        data = json.loads(out)
+        self.assertEqual(data["stations_unknown"], 1)
+        self.assertIn("refreshed stations of Hub: 5 stored", err)
+
+    def test_reader_role_cannot_refresh_and_says_so(self):
+        from sqlalchemy.exc import ProgrammingError
+        with mock.patch.object(external, "refresh_stations", side_effect=ProgrammingError("x", {}, Exception("denied"))):
+            n, err = cli.refresh_system_stations(self.s, "Hub")
+        self.assertIsNone(n)
+        self.assertIn("read-only", err)
+
+    def test_mcp_tools_accept_the_station_arguments(self):
+        from eddn_helper import mcp_server
+        self.refresh()
+        with mock.patch.object(mcp_server, "_run", side_effect=lambda fn, *a, **k: fn(self.s, *a, **k)):
+            res = mcp_server.find_systems(economies=["Agri"], min_faction_stations=1, faction_state="Expansion",
+                                          state_in="pending", station_types=["settlement"], near="Hub", ly=1)
+            fs = mcp_server.faction_stations("Grow", station_types=["settlement"])
+        self.assertEqual([r["system"] for r in res["results"]], ["Hub"])
+        self.assertEqual([r["station"] for r in fs["stations"]], ["Evans Farm"])
 
 
 EDSM = {
