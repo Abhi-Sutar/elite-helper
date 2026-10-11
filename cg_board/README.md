@@ -18,3 +18,4 @@ then open http://127.0.0.1:8765/ (--open does it for you).
 - python cg_board/cg_board.py once          write data.json one time
 - python cg_board/cg_board.py reset [tab]   restart the "Change" baseline
 - Distance to star (Ls) is not in the database. It is fetched from EDSM once per system and cached in ls_cache.json.
+- Score (0-100) orders stations inside each jump section: loads/(loads+25), divided by (1 + Ls/1500), halved for every 12 h of data age beyond 6 h. The constants are at the top of the script in index.html.
