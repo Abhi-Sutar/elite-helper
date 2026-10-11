@@ -3,7 +3,9 @@
 import argparse
 import csv
 import json
+import re
 import sys
+from datetime import datetime, timezone
 
 from . import config, database, legacy, live, migrate, queries, store
 
@@ -18,11 +20,25 @@ def fmt_age(h):
     return f"{h * 60:.0f}m" if h < 1 else (f"{h:.1f}h" if h < 48 else f"{h / 24:.1f}d")
 
 
+_UTC_STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+
+
+def show_time(value):
+    """UTC ISO stamp ('2026-10-11T10:54:03Z') -> the display timezone (ELITE_HELPER_DISPLAY_TZ), other values unchanged."""
+    if not isinstance(value, str) or not _UTC_STAMP.fullmatch(value):
+        return value
+    tz = config.display_tz()
+    if tz is None:
+        return value
+    dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return dt.astimezone(None if tz == "local" else tz).isoformat(timespec="seconds")
+
+
 def table(rows, cols):
     """cols: list of (header, key_or_callable). Prints a left-aligned text table."""
     cells = [[h for h, _ in cols]]
     for r in rows:
-        cells.append([str(k(r) if callable(k) else r.get(k, "")) for _, k in cols])
+        cells.append([str(show_time(k(r) if callable(k) else r.get(k, ""))) for _, k in cols])
     widths = [max(len(row[i]) for row in cells) for i in range(len(cols))]
     for n, row in enumerate(cells):
         print("  ".join(c.ljust(widths[i]) for i, c in enumerate(row)).rstrip())
@@ -39,7 +55,7 @@ def emit(args, data, human, csv_rows=None):
         columns, rows = csv_rows(data)
         writer = csv.writer(sys.stdout, lineterminator="\n")
         writer.writerow(columns)
-        writer.writerows([[("" if r.get(c) is None else r.get(c)) for c in columns] for r in rows])
+        writer.writerows([[("" if r.get(c) is None else show_time(r.get(c))) for c in columns] for r in rows])
     elif args.json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
@@ -359,7 +375,7 @@ def cmd_traffic(args, session):
               f"({d['updates_per_hour']}/hour over {d['observed_hours']} observed hours), "
               f"{d['distinct_uploaders']} distinct uploaders, {d['changed']} history rows written")
         if d.get("busiest_bucket"):
-            print(f"  busiest {d['bucket_minutes']}-minute bucket: {d['busiest_bucket']['ts']} "
+            print(f"  busiest {d['bucket_minutes']}-minute bucket: {show_time(d['busiest_bucket']['ts'])} "
                   f"({d['busiest_bucket']['updates']} updates)")
         if d.get("software"):
             print("  software: " + ", ".join(f"{x['software']} ({x['updates']})" for x in d["software"]))

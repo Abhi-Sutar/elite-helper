@@ -1,0 +1,675 @@
+{
+ "updated": "2026-10-11T10:45:56Z",
+ "order": [
+  "super",
+  "semi",
+  "power",
+  "comp"
+ ],
+ "config": {
+  "title": "CG supply board",
+  "target": {
+   "name": "Zero Squared",
+   "system": "HIP 74116"
+  },
+  "ship": {
+   "name": "Le Big Plipper",
+   "laden_ly": 31.34,
+   "unladen_ly": 45.22,
+   "cargo": 1147
+  },
+  "station_types": [
+   "Coriolis",
+   "Orbis",
+   "Ocellus",
+   "Bernal",
+   "Dodec",
+   "AsteroidBase"
+  ]
+ },
+ "tabs": {
+  "super": {
+   "label": "Superconductors",
+   "commodity": "superconductors",
+   "cg": 65510,
+   "max_ly": 125.4,
+   "max_jumps": 4,
+   "baselineAt": "2026-10-11T00:54:41Z",
+   "rows": {
+    "Froud Depot": {
+     "system": "HIP 73208",
+     "ly": 120.8,
+     "ls": 753,
+     "stock": 404631,
+     "price": 5657,
+     "age": 7.0,
+     "base": 406360
+    },
+    "Acgt Debye Beacon 1": {
+     "system": "Praea Euq AQ-X c1-2",
+     "ly": 88.8,
+     "ls": 1620,
+     "stock": 32631,
+     "price": 5760,
+     "age": 0.1,
+     "base": 32595
+    },
+    "LopezdeLegazpi Terminal": {
+     "system": "Col 285 Sector AX-Z c14-1",
+     "ly": 118.0,
+     "ls": 12613,
+     "stock": 93431,
+     "price": 5791,
+     "age": 0.3,
+     "base": 92387
+    },
+    "Buren Vision": {
+     "system": "Praea Euq DG-W b2-2",
+     "ly": 124.1,
+     "ls": 1246,
+     "stock": 212225,
+     "price": 5825,
+     "age": 20.8,
+     "base": 212225
+    },
+    "Pons's Pride": {
+     "system": "HIP 75673",
+     "ly": 122.5,
+     "ls": 2326,
+     "stock": 6142,
+     "price": 5855,
+     "age": 7.3,
+     "base": 6712
+    },
+    "Gresley Vista": {
+     "system": "Praea Euq KM-C b2",
+     "ly": 120.4,
+     "ls": 1164,
+     "stock": 2205849,
+     "price": 5862,
+     "age": 1.6,
+     "base": 2167688
+    },
+    "Ellington's Resolve": {
+     "system": "HIP 70889",
+     "ly": 115.1,
+     "ls": 2911,
+     "stock": 336179,
+     "price": 5994,
+     "age": 7.2,
+     "base": 338490
+    },
+    "[bpcl] Smeltshop 2": {
+     "system": "Wregoe HW-Y c28-2",
+     "ly": 107.4,
+     "ls": 814,
+     "stock": 515122,
+     "price": 6032,
+     "age": 6.3,
+     "base": 579039
+    },
+    "Deutsch City": {
+     "system": "Col 359 Sector EZ-J b12-1",
+     "ly": 122.2,
+     "ls": 25,
+     "stock": 267617,
+     "price": 6122,
+     "age": 8.4,
+     "base": 266821
+    },
+    "Gandhi Prospect": {
+     "system": "Praea Euq ZF-W c2-8",
+     "ly": 107.8,
+     "ls": 1687,
+     "stock": 1699177,
+     "price": 6127,
+     "age": 0.0,
+     "base": 1738027
+    },
+    "Chertovsky's Pride": {
+     "system": "HIP 75912",
+     "ly": 118.7,
+     "ls": 1180,
+     "stock": 8720,
+     "price": 6233,
+     "age": 19.2,
+     "base": 8720
+    },
+    "Paradisi Depot": {
+     "system": "Praea Euq VO-Y b1-0",
+     "ly": 105.4,
+     "ls": 128186,
+     "stock": 849314,
+     "price": 6258,
+     "age": 0.4,
+     "base": 1076403
+    },
+    "Rontgen Depot": {
+     "system": "HIP 70053",
+     "ly": 79.6,
+     "ls": 2538,
+     "stock": 6064,
+     "price": 6304,
+     "age": 0.2,
+     "base": 4480
+    },
+    "Dragonsreach": {
+     "system": "Col 285 Sector LG-F b27-0",
+     "ly": 100.0,
+     "ls": 164,
+     "stock": 4182,
+     "price": 6386,
+     "age": 6.5,
+     "base": 1151
+    },
+    "Seamans Terminal": {
+     "system": "Praea Euq ND-R b5-3",
+     "ly": 115.5,
+     "ls": 10,
+     "stock": 392465,
+     "price": 6397,
+     "age": 4.4,
+     "base": 433256
+    },
+    "Scott's Progress": {
+     "system": "Col 285 Sector DV-F b27-0",
+     "ly": 89.4,
+     "ls": 31,
+     "stock": 4685,
+     "price": 6402,
+     "age": 6.2,
+     "base": 1181
+    },
+    "Historical Reference": {
+     "system": "HIP 77208",
+     "ly": 116.3,
+     "ls": 2692,
+     "stock": 2010023,
+     "price": 6423,
+     "age": 7.4,
+     "base": 2010023
+    },
+    "Penguin Vacation Site": {
+     "system": "Col 359 Sector FE-L b11-2",
+     "ly": 97.8,
+     "ls": 746,
+     "stock": 2578,
+     "price": 6441,
+     "age": 3.2,
+     "base": 2578
+    },
+    "Haskin Gateway": {
+     "system": "Col 359 Sector CO-L b11-0",
+     "ly": 95.0,
+     "ls": 227,
+     "stock": 4073,
+     "price": 6450,
+     "age": 1.9,
+     "base": 4073
+    },
+    "Nigh Depot": {
+     "system": "Col 285 Sector GU-I b25-2",
+     "ly": 109.0,
+     "ls": 326,
+     "stock": 587652,
+     "price": 6472,
+     "age": 4.8,
+     "base": 680366
+    },
+    "Dante's Pride": {
+     "system": "HIP 76487",
+     "ly": 88.5,
+     "ls": 72500,
+     "stock": 213,
+     "price": 6546,
+     "age": 6.0,
+     "base": 1435
+    },
+    "[bpcl] Smeltshop 1": {
+     "system": "HIP 68864",
+     "ly": 121.2,
+     "ls": 35999,
+     "stock": 107543,
+     "price": 6548,
+     "age": 22.2,
+     "base": 107543
+    },
+    "Kummer Hub": {
+     "system": "HIP 74246",
+     "ly": 78.2,
+     "ls": 1686,
+     "stock": 36516,
+     "price": 6571,
+     "age": 0.7,
+     "base": 1159
+    },
+    "Newfield Vision": {
+     "system": "Col 359 Sector GV-X d1-50",
+     "ly": 107.0,
+     "ls": 1302,
+     "stock": 240962,
+     "price": 6638,
+     "age": 5.1,
+     "base": 478222
+    },
+    "Andriyevsky Terminal": {
+     "system": "Col 285 Sector RA-C c14-3",
+     "ly": 67.7,
+     "ls": 727,
+     "stock": 15483,
+     "price": 6668,
+     "age": 0.6,
+     "base": 2091
+    },
+    "Hasse Prospect": {
+     "system": "HIP 74246",
+     "ly": 78.2,
+     "ls": 2432,
+     "stock": 404,
+     "price": 6677,
+     "age": 6.7,
+     "base": 1109
+    },
+    "Luyten Hub": {
+     "system": "HIP 73523",
+     "ly": 66.7,
+     "ls": 195,
+     "stock": 3009,
+     "price": 6678,
+     "age": 4.0,
+     "base": 3009
+    },
+    "Grushin Prospect": {
+     "system": "HR 5518",
+     "ly": 55.1,
+     "ls": 602,
+     "stock": 2820,
+     "price": 6678,
+     "age": 0.0,
+     "base": 1092
+    },
+    "Hoshino Ruri Skunkworks": {
+     "system": "11 Scorpii",
+     "ly": 102.9,
+     "ls": 3035,
+     "stock": 8335,
+     "price": 6680,
+     "age": 2.7,
+     "base": 2066
+    },
+    "Hubble Hub": {
+     "system": "Praea Euq YE-Y b1-3",
+     "ly": 106.6,
+     "ls": 38,
+     "stock": 1628,
+     "price": 6680,
+     "age": 7.1,
+     "base": 1897
+    },
+    "Kasdan Vision": {
+     "system": "HIP 74671",
+     "ly": 92.2,
+     "ls": 2412,
+     "stock": 1951,
+     "price": 6682,
+     "age": 7.1,
+     "base": 1951
+    },
+    "Christiano Plant": {
+     "system": "Col 359 Sector JV-V c3-11",
+     "ly": 98.4,
+     "ls": 1871,
+     "stock": 1602,
+     "price": 6684,
+     "age": 7.3,
+     "base": 2544
+    },
+    "Benyovszky Gateway": {
+     "system": "HIP 71120",
+     "ly": 106.7,
+     "ls": 1234,
+     "stock": 39143,
+     "price": 6685,
+     "age": 5.8,
+     "base": 42330
+    },
+    "Fox Box": {
+     "system": "Col 359 Sector IG-W d2-53",
+     "ly": 85.6,
+     "ls": 4301,
+     "stock": 5010,
+     "price": 6685,
+     "age": 0.2,
+     "base": 2469
+    },
+    "Maitz Platform": {
+     "system": "Col 285 Sector NL-F b27-0",
+     "ly": 90.2,
+     "ls": 174,
+     "stock": 1346,
+     "price": 6685,
+     "age": 0.0,
+     "base": 1346
+    },
+    "Vlamingh Refinery": {
+     "system": "HIP 75659",
+     "ly": 106.4,
+     "ls": 345,
+     "stock": 130,
+     "price": 6687,
+     "age": 9.7,
+     "base": 13066
+    },
+    "Levi-Strauss's Inheritance": {
+     "system": "Praea Euq IT-X b2-1",
+     "ly": 68.5,
+     "ls": 109,
+     "stock": 3873,
+     "price": 6689,
+     "age": 0.0,
+     "base": 1765
+    },
+    "Holland Hub": {
+     "system": "Col 359 Sector GA-W c3-11",
+     "ly": 109.7,
+     "ls": 14387,
+     "stock": 194098,
+     "price": 6690,
+     "age": 11.7,
+     "base": 194098
+    },
+    "Arms And Steel - Free Wolfs Quality": {
+     "system": "Col 285 Sector FZ-I b25-1",
+     "ly": 116.9,
+     "ls": 108,
+     "stock": 723035,
+     "price": 6724,
+     "age": 4.2,
+     "base": 658169
+    },
+    "Menezes Depot": {
+     "system": "HIP 75554",
+     "ly": 84.4,
+     "ls": 2889,
+     "stock": 649,
+     "price": 6735,
+     "age": 7.1,
+     "base": 1108
+    },
+    "Vulcan Ironworks": {
+     "system": "Col 285 Sector RP-D c13-6",
+     "ly": 103.2,
+     "ls": 335,
+     "stock": 27702,
+     "price": 6741,
+     "age": 2.2,
+     "base": 1690
+    },
+    "Bogdan Main": {
+     "system": "HIP 75852",
+     "ly": 105.4,
+     "ls": 1701,
+     "stock": 26830,
+     "price": 6741,
+     "age": 3.3,
+     "base": 49226
+    },
+    "Whitworth Town": {
+     "system": "Col 285 Sector QP-D c13-9",
+     "ly": 89.3,
+     "ls": 1827,
+     "stock": 12688,
+     "price": 6741,
+     "age": 4.9,
+     "base": 3693
+    },
+    "Serpents Lair": {
+     "system": "3 Serpentis",
+     "ly": 73.1,
+     "ls": 1646,
+     "stock": 1884,
+     "price": 6741,
+     "age": 5.0,
+     "base": 1884
+    },
+    "[csel] Harmony Horizons": {
+     "system": "HIP 74805",
+     "ly": 86.4,
+     "ls": 4837,
+     "stock": 19207,
+     "price": 6741,
+     "age": 3.5,
+     "base": 1944
+    },
+    "Midgley Platform": {
+     "system": "HIP 74613",
+     "ly": 62.1,
+     "ls": 2717,
+     "stock": 7231,
+     "price": 6741,
+     "age": 0.1,
+     "base": 1352
+    },
+    "Bogdan Primary": {
+     "system": "HIP 75852",
+     "ly": 105.4,
+     "ls": 1696,
+     "stock": 42427,
+     "price": 6741,
+     "age": 0.1,
+     "base": 1541
+    },
+    "Fulton Refinery": {
+     "system": "HIP 76003",
+     "ly": 94.0,
+     "ls": 2010,
+     "stock": 2467,
+     "price": 6754,
+     "age": 5.8,
+     "base": 2467
+    },
+    "Hrathen The Savior": {
+     "system": "Col 285 Sector QA-C c14-6",
+     "ly": 106.3,
+     "ls": 1452,
+     "stock": 1218,
+     "price": 6755,
+     "age": 6.3,
+     "base": 81875
+    },
+    "Springer's Pride": {
+     "system": "Col 285 Sector YA-N d7-58",
+     "ly": 85.5,
+     "ls": 752,
+     "stock": 3212,
+     "price": 6755,
+     "age": 4.2,
+     "base": 1631
+    },
+    "Kamieniec": {
+     "system": "HIP 75554",
+     "ly": 84.4,
+     "ls": 2209,
+     "stock": 8835,
+     "price": 6798,
+     "age": 5.1,
+     "base": 1193
+    },
+    "Noyce Landing": {
+     "system": "HIP 78121",
+     "ly": 93.8,
+     "ls": 1422,
+     "stock": 33599,
+     "price": 6808,
+     "age": 1.5,
+     "base": 3077
+    },
+    "[bpcl] Metallurgical Center": {
+     "system": "Wregoe HW-Y c28-2",
+     "ly": 107.4,
+     "ls": 333,
+     "stock": 829129,
+     "price": 6808,
+     "age": 6.6,
+     "base": 899198
+    },
+    "Wiseman's Claim": {
+     "system": "HIP 77139",
+     "ly": 114.9,
+     "ls": 10,
+     "stock": 43468,
+     "price": 6808,
+     "age": 0.7,
+     "base": 58256
+    },
+    "Beer Enterprise": {
+     "system": "Col 285 Sector JG-F b27-0",
+     "ly": 101.3,
+     "ls": 51,
+     "stock": 18863,
+     "price": 6808,
+     "age": 2.2,
+     "base": 1566
+    }
+   }
+  },
+  "semi": {
+   "label": "Semiconductors",
+   "commodity": "semiconductors",
+   "cg": 10840,
+   "max_ly": 62.7,
+   "max_jumps": 2,
+   "baselineAt": "2026-10-11T00:54:41Z",
+   "rows": {
+    "Grushin Prospect": {
+     "system": "HR 5518",
+     "ly": 55.1,
+     "ls": 602,
+     "stock": 24598,
+     "price": 1148,
+     "age": 0.0,
+     "base": 427
+    },
+    "Midgley Platform": {
+     "system": "HIP 74613",
+     "ly": 62.1,
+     "ls": 2717,
+     "stock": 173112,
+     "price": 1159,
+     "age": 0.1,
+     "base": 1055
+    },
+    "Forrester's Progress": {
+     "system": "Col 359 Sector KV-V c3-4",
+     "ly": 60.9,
+     "ls": 105,
+     "stock": 490,
+     "price": 1277,
+     "age": 2.7,
+     "base": 174
+    }
+   }
+  },
+  "power": {
+   "label": "Power Generators",
+   "commodity": "powergenerators",
+   "cg": 23880,
+   "max_ly": 62.7,
+   "max_jumps": 2,
+   "baselineAt": "2026-10-11T00:54:41Z",
+   "rows": {
+    "Frakes City": {
+     "system": "HR 5518",
+     "ly": 55.1,
+     "ls": 1223,
+     "stock": 556,
+     "price": 2347,
+     "age": 4.7,
+     "base": 379
+    },
+    "Malerba Landing": {
+     "system": "Col 285 Sector WF-N d7-30",
+     "ly": 51.3,
+     "ls": 27421,
+     "stock": 7130,
+     "price": 2542,
+     "age": 2.3,
+     "base": 147
+    },
+    "Vinogradov Horizons": {
+     "system": "Col 359 Sector RV-R b7-3",
+     "ly": 48.8,
+     "ls": 809,
+     "stock": 129,
+     "price": 2641,
+     "age": 0.0,
+     "base": 50
+    },
+    "Malvern Prospect": {
+     "system": "Col 359 Sector KV-V c3-4",
+     "ly": 60.9,
+     "ls": 3004,
+     "stock": 216,
+     "price": 2646,
+     "age": 8.0,
+     "base": 91
+    }
+   }
+  },
+  "comp": {
+   "label": "Computer Components",
+   "commodity": "computercomponents",
+   "cg": 7080,
+   "max_ly": 62.7,
+   "max_jumps": 2,
+   "baselineAt": "2026-10-11T00:54:41Z",
+   "rows": {
+    "Frakes City": {
+     "system": "HR 5518",
+     "ly": 55.1,
+     "ls": 1223,
+     "stock": 451,
+     "price": 662,
+     "age": 4.7,
+     "base": 277
+    },
+    "Nespoli Vista": {
+     "system": "Praea Euq TT-A d25",
+     "ly": 58.0,
+     "ls": 733,
+     "stock": 1404,
+     "price": 766,
+     "age": 5.1,
+     "base": 664
+    },
+    "Vinogradov Horizons": {
+     "system": "Col 359 Sector RV-R b7-3",
+     "ly": 48.8,
+     "ls": 809,
+     "stock": 927,
+     "price": 767,
+     "age": 0.0,
+     "base": 253
+    },
+    "Malvern Prospect": {
+     "system": "Col 359 Sector KV-V c3-4",
+     "ly": 60.9,
+     "ls": 3004,
+     "stock": 184,
+     "price": 768,
+     "age": 8.0,
+     "base": 917
+    },
+    "Malerba Landing": {
+     "system": "Col 285 Sector WF-N d7-30",
+     "ly": 51.3,
+     "ls": 27421,
+     "stock": 12215,
+     "price": 768,
+     "age": 2.3,
+     "base": 331
+    }
+   }
+  }
+ }
+}
