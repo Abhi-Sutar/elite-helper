@@ -11,7 +11,7 @@ from sqlalchemy import case, func, select
 
 from . import config, database, lock, store
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Market, MarketUpdate, PriceHistory,
-                     System, SystemUpdate)
+                     Station, StationSync, System, SystemUpdate)
 
 
 def iso(dt):
@@ -780,3 +780,456 @@ def data_status(session):
             "last_message_minutes_ago": round((time.time() - int(last_msg)) / 60, 1) if last_msg else None,
             "listener_heartbeat_minutes_ago": hb_age,
             "listener_running": running, "listener_pid": pid}
+
+
+# ---- economies and system search ---------------------------------------------------------------------------------
+
+_KEY_ALIASES = {"agriculture": "agri", "agricultural": "agri"}
+
+
+def norm_key(text):
+    """'High Tech' / 'hightech' / 'HighTech' -> 'hightech'; 'Agriculture' -> 'agri'. Used for economies and states."""
+    key = re.sub(r"[\s_\-]+", "", str(text or "")).lower()
+    return _KEY_ALIASES.get(key, key)
+
+
+def _as_list(value):
+    """Accept a list or a comma separated string."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.split(",")
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _system_markets(session, system_ids=None, include_carriers=False):
+    """{system_id64: [Market]}; a market belongs to its system_id64 or, when unlinked, to the system of that name."""
+    q = (select(Market, func.coalesce(Market.system_id64, System.id64).label("sid"))
+         .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name)))
+    if not include_carriers:
+        q = q.where(Market.is_carrier.is_(False))
+    out = {}
+    for m, sid in session.execute(q):
+        if sid is not None and (system_ids is None or sid in system_ids):
+            out.setdefault(sid, []).append(m)
+    return out
+
+
+SURFACE_CATEGORIES = ("planetary_port", "planetary_outpost", "surface_settlement")
+
+
+def station_category(station_type):
+    """
+    Coarse station kind from an EDSM ('Odyssey Settlement') or EDDN ('OnFootSettlement') type string:
+    carrier, surface_settlement, planetary_port, planetary_outpost, outpost, megaship, starport (Coriolis, Orbis, Ocellus,
+    asteroid base ...) or other. Surface settlements and planetary outposts are ordinary stations everywhere in the search.
+    """
+    key = norm_key(station_type)
+    if "carrier" in key:
+        return "carrier"
+    if "settlement" in key:
+        return "surface_settlement"
+    if "craterport" in key or "planetaryport" in key:
+        return "planetary_port"
+    if "crateroutpost" in key or "planetaryoutpost" in key or "surfacestation" in key:
+        return "planetary_outpost"
+    if "outpost" in key:
+        return "outpost"
+    if "megaship" in key:
+        return "megaship"
+    if any(k in key for k in ("coriolis", "orbis", "ocellus", "starport", "asteroid", "bernal", "dodec")):
+        return "starport"
+    return "other"
+
+
+def station_matches_types(station, type_keys):
+    """True if the station's type contains one of the names or is of that category ('settlement', 'surface' ...)."""
+    key, category = norm_key(station.get("station_type")), station.get("category")
+    for k in type_keys:
+        k = k[:-1] if k.endswith("s") and len(k) > 3 else k          # 'settlements' -> 'settlement'
+        if k in key or k == norm_key(category):
+            return True
+        if k == "surface" and category in SURFACE_CATEGORIES:
+            return True
+        if k == "settlement" and category == "surface_settlement":
+            return True
+    return False
+
+
+def _merge_economies(*lists):
+    out = []
+    for lst in lists:
+        for e in lst or []:
+            if e and e not in out:
+                out.append(e)
+    return out
+
+
+def _local_station(m):
+    return {"station": m.station, "station_type": m.station_type, "category": station_category(m.station_type),
+            "is_carrier": bool(m.is_carrier), "body": None, "distance_to_arrival_ls": None,
+            "economies": list(m.economies or []), "controlling_faction": None, "has_prices": True,
+            "has_market": True, "has_shipyard": None, "has_outfitting": None, "market_id": m.market_id,
+            "market_age_hours": age_hours(m.updated_at), "fetched_age_hours": None, "source": "eddn"}
+
+
+def _stored_station(st):
+    return {"station": st.name, "station_type": st.station_type, "category": station_category(st.station_type),
+            "is_carrier": False, "body": st.body, "distance_to_arrival_ls": st.distance_to_arrival_ls,
+            "economies": _merge_economies([st.economy], [st.second_economy]),
+            "controlling_faction": st.controlling_faction, "has_prices": False, "has_market": bool(st.has_market),
+            "has_shipyard": bool(st.has_shipyard), "has_outfitting": bool(st.has_outfitting), "market_id": st.market_id,
+            "market_age_hours": None, "fetched_age_hours": age_hours(st.fetched_at), "source": "edsm"}
+
+
+def _system_stations(session, system_ids=None, include_carriers=False):
+    """
+    {system_id64: {'known': bool, 'fetched_age_hours': float|None, 'stations': [dict]}}: the stations stored from EDSM
+    merged with the stations known from EDDN market uploads (matched on market id, else name). 'known' = EDSM was asked
+    for this system (station_sync), i.e. the list is meant to be complete; fleet carriers only come from market uploads
+    and are included on request.
+    """
+    wanted = None if system_ids is None else set(system_ids)
+
+    def mine(sid):
+        return wanted is None or sid in wanted
+
+    out = {}
+    stored = {}
+    for st in session.execute(select(Station)).scalars():
+        if mine(st.system_id64):
+            stored.setdefault(st.system_id64, []).append(_stored_station(st))
+    synced = {sid: fetched for sid, fetched in session.execute(select(StationSync.system_id64, StationSync.fetched_at))
+              if mine(sid)}
+    local = _system_markets(session, wanted, include_carriers)
+    for sid in set(stored) | set(synced) | set(local):
+        merged = {(x["market_id"] or x["station"].lower()): x for x in stored.get(sid, [])}
+        by_name = {x["station"].lower(): k for k, x in merged.items()}
+        for m in local.get(sid, []):
+            lst = _local_station(m)
+            key = lst["market_id"] if lst["market_id"] in merged else by_name.get(lst["station"].lower())
+            if key is None:
+                merged[lst["market_id"]] = lst
+                continue
+            x = merged[key]
+            x.update(has_prices=True, market_age_hours=lst["market_age_hours"], source="both",
+                     economies=_merge_economies(x["economies"], lst["economies"]),
+                     station_type=x["station_type"] or lst["station_type"])
+        stations = sorted(merged.values(), key=lambda x: (x["is_carrier"], x["station"].lower()))
+        out[sid] = {"known": sid in synced, "fetched_age_hours": age_hours(synced.get(sid)), "stations": stations}
+    return out
+
+
+def _station_view(stations, faction_names=()):
+    """Public station dicts; marks the ones controlled by one of `faction_names` (case-insensitive)."""
+    names = {n.lower() for n in faction_names}
+    out = []
+    for x in stations:
+        d = {k: v for k, v in x.items() if k != "market_id"}
+        d["controlled_by_matching_faction"] = bool(x["controlling_faction"] and x["controlling_faction"].lower() in names)
+        out.append(d)
+    return out
+
+
+def _stations_by_faction(stations):
+    out = {}
+    for x in stations:
+        if not x["is_carrier"] and x["controlling_faction"]:
+            out[x["controlling_faction"]] = out.get(x["controlling_faction"], 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def system_economy(session, name):
+    """A system's economy and second economy plus its stations (type, station economies, controlling faction)."""
+    s = find_system(session, name)
+    if s is None:
+        return {"found": False, "system": name}
+    info = _system_stations(session, {s.id64}, include_carriers=True).get(s.id64) or {
+        "known": False, "fetched_age_hours": None, "stations": []}
+    return {"found": True, "system": s.name, "id64": s.id64, "economy": s.economy, "second_economy": s.second_economy,
+            "population": s.population, "allegiance": s.allegiance, "government": s.government,
+            "info_updated_at": iso(s.updated_at), "info_age_hours": age_hours(s.updated_at), "source": s.source,
+            "controlling_faction": s.controlling_faction, "stations_known": info["known"],
+            "stations_fetched_age_hours": info["fetched_age_hours"], "stations": _station_view(info["stations"]),
+            "stations_by_faction": _stations_by_faction(info["stations"])}
+
+
+def _faction_state_hits(f, state_key, state_in):
+    """Where a faction has the given state: [{'in': 'state'|'active'|'pending'|'recovering', 'trend': ...}]
+    ('state' = its main FactionState; trend is only set for pending/recovering states)."""
+    hits = []
+    if state_in in ("any", "state") and norm_key(f.state) == state_key:
+        hits.append({"in": "state", "trend": None})
+    for slot, items in (("active", f.active_states), ("pending", f.pending_states), ("recovering", f.recovering_states)):
+        if state_in in ("any", slot):
+            hits += [{"in": slot, "trend": s["trend"]} for s in _state_items(items) if norm_key(s["state"]) == state_key]
+    return hits
+
+
+SORTS = ("distance", "population", "influence", "freshest", "name")
+
+
+def _keys(value):
+    return {norm_key(v) for v in _as_list(value)}
+
+
+def find_systems(session, economies=None, economy_scope="system", include_second=True, faction_state=None,
+                 state_in="any", controlling_only=False, near=None, ly=None, min_population=0,
+                 demand_commodities=None, include_carrier_markets=False, max_age_hours=None, limit=20, *,
+                 exclude_economies=None, exclude_scope="any", exclude_states=None, exclude_states_in="any",
+                 exclude_systems=None, max_population=None, allegiance=None, government=None, security=None,
+                 in_conflict=None, conflict_type=None, faction_name=None, min_influence=None, max_influence=None,
+                 happiness=None, state_trend=None, min_stations=0, station_types=None, sort="distance",
+                 min_faction_stations=0):
+    """
+    Systems matching ALL given criteria. Names are case/space-insensitive, lists may be comma separated strings.
+
+    Include by economy:  economies (any of them); economy_scope 'system' (system economy, plus second economy when
+        include_second), 'station' (any station's economy) or 'any'.
+    Exclude:  exclude_economies - reject a system whose economy, second economy or (exclude_scope 'any', the default,
+        or 'station') any station's economy is one of them; exclude_scope 'system' ignores stations.
+        exclude_states - reject systems where ANY faction has one of these states (exclude_states_in: 'any',
+        'state', 'active', 'pending' or 'recovering'); exclude_systems - system names to drop.
+    System attributes:  min_population / max_population, allegiance, government, security (any of), in_conflict
+        (True/False) and conflict_type (War, CivilWar, Election).
+    Faction criteria (all must hold for the SAME faction): faction_state (state_in as above; state_trend = raw trend
+        number of a pending/recovering state), controlling_only, faction_name, min_influence / max_influence (percent),
+        happiness (any of).
+    Stations (EDSM stations stored by `refresh-stations`, merged with stations known from market uploads; planetary
+        outposts and surface settlements count like any other station):  min_stations, station_types (a type name or
+        category: 'coriolis', 'outpost', 'settlement', 'surface' ...), min_faction_stations (the matching faction
+        controls at least N stations); demand_commodities - a station currently has demand for any of them.
+        Systems EDSM has not been asked about (stations_known false) are never rejected by min_stations,
+        station_types or min_faction_stations - they are listed and flagged instead.
+    Location / freshness:  near + ly, max_age_hours.  sort: 'distance' (default; most populated first without near),
+        'population', 'influence' (matching faction, highest first), 'freshest' or 'name'.
+    Snapshot data: only systems the listener (or a live lookup) has seen, as fresh as the age fields say.
+    """
+    if economy_scope not in ("system", "station", "any"):
+        return {"error": "economy_scope must be 'system', 'station' or 'any'"}
+    if exclude_scope not in ("system", "station", "any"):
+        return {"error": "exclude_scope must be 'system', 'station' or 'any'"}
+    for label, value in (("state_in", state_in), ("exclude_states_in", exclude_states_in)):
+        if value not in ("any", "state", "active", "pending", "recovering"):
+            return {"error": f"{label} must be 'any', 'state', 'active', 'pending' or 'recovering'"}
+    if sort not in SORTS:
+        return {"error": f"sort must be one of {', '.join(SORTS)}"}
+    if state_trend is not None and not faction_state:
+        return {"error": "state_trend needs faction_state"}
+    origin, err = _resolve_origin(session, near)
+    if err:
+        return err
+    eco_keys, ex_eco_keys = _keys(economies), _keys(exclude_economies)
+    ex_state_keys, ex_names = _keys(exclude_states), {n.lower() for n in _as_list(exclude_systems)}
+    allegiance_keys, government_keys, security_keys = _keys(allegiance), _keys(government), _keys(security)
+    conflict_keys, happiness_keys = _keys(conflict_type), _keys(happiness)
+    type_keys = _keys(station_types)
+    state_key = norm_key(faction_state) if faction_state else None
+    commodities = [norm_commodity(c) for c in _as_list(demand_commodities)]
+    wanted_name = faction_name.strip().lower() if faction_name else None
+    faction_filter = bool(state_key or controlling_only or wanted_name or happiness_keys
+                          or min_influence is not None or max_influence is not None)
+
+    station_info = _system_stations(session, None, include_carriers=include_carrier_markets)
+    station_hits = {}
+    if eco_keys and economy_scope in ("station", "any"):
+        for sid, info in station_info.items():
+            if any(eco_keys & {norm_key(e) for e in st["economies"]} for st in info["stations"]):
+                station_hits[sid] = True
+
+    q = select(System)
+    if min_population:
+        q = q.where(System.population >= min_population)
+    if max_population is not None:
+        q = q.where(func.coalesce(System.population, 0) <= max_population)
+    if max_age_hours is not None:
+        q = q.where(func.coalesce(System.factions_updated_at, System.updated_at) >= _fresh_cutoff(max_age_hours))
+    if origin is not None and ly is not None and None not in (origin["x"], origin["y"], origin["z"]):
+        q = q.where(System.x.between(origin["x"] - ly, origin["x"] + ly),
+                    System.y.between(origin["y"] - ly, origin["y"] + ly),
+                    System.z.between(origin["z"] - ly, origin["z"] + ly))
+    if eco_keys and economy_scope == "station":
+        q = q.where(System.id64.in_(list(station_hits) or [-1]))
+
+    candidates = []
+    for s in session.execute(q).scalars():
+        if s.name.lower() in ex_names:
+            continue
+        if allegiance_keys and norm_key(s.allegiance) not in allegiance_keys:
+            continue
+        if government_keys and norm_key(s.government) not in government_keys:
+            continue
+        if security_keys and norm_key(s.security) not in security_keys:
+            continue
+        conflicts = s.conflicts or []
+        if in_conflict is not None and bool(conflicts) != bool(in_conflict):
+            continue
+        if conflict_keys and not any(norm_key(c.get("type")) in conflict_keys for c in conflicts if isinstance(c, dict)):
+            continue
+        info = station_info.get(s.id64) or {"known": False, "stations": []}
+        stations = info["stations"]
+        if info["known"] and len(stations) < min_stations:
+            continue
+        if info["known"] and type_keys and not any(station_matches_types(st, type_keys) for st in stations):
+            continue
+        if ex_eco_keys:
+            own = {norm_key(s.economy), norm_key(s.second_economy)}
+            if own & ex_eco_keys:
+                continue
+            if exclude_scope in ("station", "any") and any(
+                    ex_eco_keys & {norm_key(e) for e in st["economies"]} for st in stations):
+                continue
+        d = distance(origin, {"x": s.x, "y": s.y, "z": s.z}) if origin is not None else None
+        if origin is not None and (d is None or (ly is not None and d > ly)):
+            continue
+        matched = None
+        if eco_keys:
+            if economy_scope in ("system", "any") and norm_key(s.economy) in eco_keys:
+                matched = "economy"
+            elif economy_scope in ("system", "any") and include_second and norm_key(s.second_economy) in eco_keys:
+                matched = "second_economy"
+            elif economy_scope in ("station", "any") and s.id64 in station_hits:
+                matched = "station"
+            if matched is None:
+                continue
+        candidates.append((s, d, matched))
+
+    faction_hits, influence_of = {}, {}
+    if faction_filter or ex_state_keys:
+        ids = [s.id64 for s, _, _ in candidates]
+        excluded_ids = set()
+        for i in range(0, len(ids), 500):
+            for f in session.execute(select(Faction).where(Faction.system_id64.in_(ids[i:i + 500]))).scalars():
+                if ex_state_keys and any(_faction_state_hits(f, k, exclude_states_in) for k in ex_state_keys):
+                    excluded_ids.add(f.system_id64)
+                if not faction_filter:
+                    continue
+                pct = _pct(f.influence)
+                if (controlling_only and not f.is_controlling) or (wanted_name and f.name.lower() != wanted_name) \
+                        or (happiness_keys and norm_key(f.happiness) not in happiness_keys) \
+                        or (min_influence is not None and (pct is None or pct < min_influence)) \
+                        or (max_influence is not None and (pct is None or pct > max_influence)):
+                    continue
+                hits = []
+                if state_key:
+                    hits = _faction_state_hits(f, state_key, state_in)
+                    if state_trend is not None:
+                        hits = [h for h in hits if h["trend"] == state_trend]
+                    if not hits:
+                        continue
+                faction_hits.setdefault(f.system_id64, []).append(
+                    {"faction": f.name, "influence_pct": pct, "state": f.state, "happiness": f.happiness,
+                     "found_in": hits, "is_controlling": bool(f.is_controlling)})
+                influence_of[f.system_id64] = max(influence_of.get(f.system_id64, 0), pct or 0)
+        candidates = [c for c in candidates if c[0].id64 not in excluded_ids
+                      and (not faction_filter or c[0].id64 in faction_hits)]
+    if min_faction_stations:
+        def enough(c):
+            info = station_info.get(c[0].id64)
+            if not info or not info["known"]:
+                return True                      # unknown systems are flagged, not rejected
+            names = {f["faction"].lower() for f in faction_hits.get(c[0].id64, [])}
+            return sum(1 for st in info["stations"] if not st["is_carrier"] and st["controlling_faction"]
+                       and st["controlling_faction"].lower() in names) >= min_faction_stations
+        candidates = [c for c in candidates if enough(c)]
+
+    demand_rows = {}
+    if commodities:
+        ids = {s.id64 for s, _, _ in candidates}
+        fresh = _fresh_cutoff(48 if max_age_hours is None else max_age_hours)
+        dq = (select(Commodity.symbol, CommodityPrice.demand, CommodityPrice.sell_price, Market.station,
+                     func.coalesce(Market.system_id64, System.id64).label("sid"))
+              .select_from(CommodityPrice)
+              .join(Market, Market.market_id == CommodityPrice.market_id)
+              .join(Commodity, Commodity.id == CommodityPrice.commodity_id)
+              .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name))
+              .where(Commodity.symbol.in_(commodities), CommodityPrice.demand > 0,
+                     func.coalesce(CommodityPrice.seen_at, Market.updated_at) >= fresh))
+        if not include_carrier_markets:
+            dq = dq.where(Market.is_carrier.is_(False))
+        for sym, demand, sell, station, sid in session.execute(dq):
+            if sid in ids:
+                demand_rows.setdefault(sid, []).append(
+                    {"commodity": sym, "station": station, "demand": demand, "sell_price": sell})
+        candidates = [c for c in candidates if c[0].id64 in demand_rows]
+
+    def order(c):
+        s, d, _ = c
+        if sort == "population":
+            return (-(s.population or 0), s.name)
+        if sort == "influence":
+            return (-influence_of.get(s.id64, 0), s.name)
+        if sort == "freshest":
+            age = age_hours(s.factions_updated_at)
+            return (age is None, age or 0, s.name)
+        if sort == "name":
+            return (s.name.lower(),)
+        return (d is None, d if d is not None else 0, -(s.population or 0), s.name)
+    candidates.sort(key=order)
+
+    results = []
+    for s, d, matched in candidates[:limit]:
+        info = station_info.get(s.id64) or {"known": False, "fetched_age_hours": None, "stations": []}
+        matching = faction_hits.get(s.id64, [])
+        for f in matching:
+            f["stations_controlled"] = sum(1 for st in info["stations"] if not st["is_carrier"]
+                                           and (st["controlling_faction"] or "").lower() == f["faction"].lower())
+        results.append({
+            "system": s.name, "id64": s.id64, "distance_ly": round(d, 1) if d is not None else None, "population": s.population,
+            "economy": s.economy, "second_economy": s.second_economy, "matched_economy": matched,
+            "allegiance": s.allegiance, "government": s.government, "security": s.security,
+            "in_conflict": bool(s.conflicts), "conflict_types": sorted({c.get("type") for c in s.conflicts or []
+                                                                        if isinstance(c, dict) and c.get("type")}),
+            "matching_factions": matching, "stations_known": info["known"],
+            "stations_fetched_age_hours": info["fetched_age_hours"],
+            "stations": _station_view(info["stations"], [f["faction"] for f in matching]),
+            "stations_by_faction": _stations_by_faction(info["stations"]),
+            "demand": sorted(demand_rows.get(s.id64, []), key=lambda r: -(r["demand"] or 0)),
+            "factions_age_hours": age_hours(s.factions_updated_at), "info_age_hours": age_hours(s.updated_at),
+            "source": s.source})
+    unknown = [c[0].name for c in candidates if not (station_info.get(c[0].id64) or {}).get("known")]
+    return {"criteria": {"economies": sorted(eco_keys), "economy_scope": economy_scope, "include_second": include_second,
+                         "exclude_economies": sorted(ex_eco_keys), "exclude_scope": exclude_scope,
+                         "exclude_states": sorted(ex_state_keys), "exclude_states_in": exclude_states_in,
+                         "exclude_systems": sorted(ex_names), "faction_state": faction_state, "state_in": state_in,
+                         "state_trend": state_trend, "controlling_only": controlling_only,
+                         "faction_name": faction_name, "min_influence": min_influence, "max_influence": max_influence,
+                         "happiness": sorted(happiness_keys), "min_population": min_population,
+                         "max_population": max_population, "allegiance": sorted(allegiance_keys),
+                         "government": sorted(government_keys), "security": sorted(security_keys),
+                         "in_conflict": in_conflict, "conflict_type": sorted(conflict_keys),
+                         "min_stations": min_stations, "station_types": sorted(type_keys),
+                         "min_faction_stations": min_faction_stations,
+                         "demand_commodities": commodities, "ly": ly, "max_age_hours": max_age_hours, "sort": sort},
+            "origin": near, "count": len(candidates), "shown": len(results), "results": results,
+            "stations_unknown": len(unknown), "unknown_systems": unknown[:20],
+            "note": "snapshot of systems seen by the listener or a live lookup; check the age fields"
+                    + ("; %d of %d systems have no EDSM station data (stations_known false) - station filters did not "
+                       "apply to them, run `refresh-stations` or `find-systems --refresh-stations`"
+                       % (len(unknown), len(candidates)) if unknown else "")}
+
+
+def faction_stations(session, faction, system=None, near=None, ly=None, station_types=None, limit=100):
+    """Stored EDSM stations controlled by a faction (exact name, case-insensitive), optionally in one system / near one."""
+    origin, err = _resolve_origin(session, near)
+    if err:
+        return err
+    type_keys = _keys(station_types)
+    q = (select(Station, System).join(System, System.id64 == Station.system_id64)
+         .where(func.lower(Station.controlling_faction) == faction.strip().lower()))
+    if system:
+        q = q.where(func.lower(System.name) == system.strip().lower())
+    rows = []
+    for st, sysrow in session.execute(q):
+        d = distance(origin, {"x": sysrow.x, "y": sysrow.y, "z": sysrow.z}) if origin is not None else None
+        if origin is not None and (d is None or (ly is not None and d > ly)):
+            continue
+        item = _stored_station(st)
+        if type_keys and not station_matches_types(item, type_keys):
+            continue
+        rows.append({"system": sysrow.name, "distance_ly": round(d, 1) if d is not None else None,
+                     **{k: item[k] for k in ("station", "station_type", "category", "body", "economies",
+                                              "distance_to_arrival_ls", "has_market", "fetched_age_hours")}})
+    rows.sort(key=lambda r: (r["distance_ly"] is None, r["distance_ly"] or 0, r["system"], r["station"]))
+    return {"faction": faction, "count": len(rows), "systems": len({r["system"] for r in rows}), "stations": rows[:limit],
+            "note": "only systems whose stations were fetched from EDSM (refresh-stations) are covered"}

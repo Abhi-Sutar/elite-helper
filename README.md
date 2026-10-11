@@ -85,6 +85,46 @@ Retention: market history 30 days; faction history 1 year; current snapshots alw
 when the listener first saw a station or system (EDDN keeps nothing), and rows written before the 0003 migration
 have no mean price, brackets, happiness or state lists.
 
+## Economies and finding systems
+
+```
+python -m eddn_helper economy Sol [--live]                       # system economy / second economy + its stations
+python -m eddn_helper find-systems --economy Extraction,Refinery,Industrial --state Expansion --near Sol --ly 40
+python -m eddn_helper find-systems --state Expansion --state-in pending --economy Extraction --demand bertrandite,coltan
+```
+
+`find-systems` (MCP: `find_systems`) returns systems matching **all** criteria, nearest to `--near` first (else most
+populated first); `--csv` / `--json` export them.
+
+| Option | Meaning |
+|---|---|
+| `--economy A,B` | any of these; case/space-insensitive (`High Tech` = `HighTech`, `Agriculture` = `Agri`) |
+| `--economy-scope system\|station\|any` | system economy (default, plus the second economy unless `--no-second`), any station's economy, or either |
+| `--state X --state-in any\|state\|active\|pending\|recovering` | a faction has state X as its main state, in its active/pending/recovering list, or anywhere (default `any`); `--controlling-only` limits it to the controlling faction |
+| `--near SYSTEM --ly N`, `--min-pop N`, `--max-age-hours N` | distance, population and data-age filters |
+| `--demand a,b` | a station currently has demand for any of these commodities |
+| `--exclude-economy A,B` `--exclude-scope any\|system\|station` | reject a system whose economy, second economy or (scope `any`/`station`) any station's economy is one of these - "not at all" is the default |
+| `--exclude-state X,Y` `--exclude-state-in ...` | reject systems where **any** faction has one of these states (e.g. `War,CivilWar`) |
+| `--exclude-system A,B`, `--max-pop N` | drop named systems; maximum population (`--min-pop` exists too) |
+| `--allegiance`, `--government`, `--security` | any-of lists, e.g. `--government Democracy,Corporate --security low,anarchy` |
+| `--conflict yes\|no`, `--conflict-type War,CivilWar,Election` | systems with / without an active conflict, and of which type |
+| `--faction NAME`, `--min-influence N`, `--max-influence N`, `--happiness A,B`, `--trend N`, `--controlling-only` | criteria on the **same** faction as `--state` (influence in percent; `--trend` is the raw number stored for pending/recovering states) |
+| `--min-stations N`, `--station-type coriolis,outpost` | at least N stations with a stored market; a station type containing one of the names |
+| `--sort distance\|population\|influence\|freshest\|name` | ordering (default distance; most populated first without `--near`) |
+
+Example - agricultural or industrial systems near Sol with a faction **pending Expansion** and no extraction or
+refinery economy anywhere (system, second economy or stations):
+
+```
+python -m eddn_helper find-systems --economy Agri,Industrial --state Expansion --state-in pending --exclude-economy Extraction,Refinery --near Sol --ly 60
+```
+
+Each result lists the matching factions with where the state was found and the **raw trend** of pending/recovering
+states, the system's stations with their economies, and the age of the faction data. Notes: this is a **current
+snapshot** (economy changes are not kept as history) and only covers systems the listener (or an earlier `--live`
+lookup) has seen; `economy --live` refreshes a missing/stale system from EDSM and lists stations EDSM knows that we have
+no market for (not stored). Searching the whole galaxy via Spansh is not implemented yet.
+
 ## Time zones
 
 Everything is stored and returned in **UTC** (`timestamptz` on PostgreSQL, UTC on SQLite; `--json` and the MCP tools
