@@ -58,14 +58,19 @@ class CommanderState:
         }
 
 
+def apply_event(state, dt, e):
+    """Apply one event to the state through the registered handlers."""
+    name = e.get("event")
+    state.last_event, state.last_event_time = name, jfiles.iso(dt)
+    for fn in HANDLERS.get(name, ()):
+        fn(state, e, dt)
+
+
 def replay(events, state=None):
     """Fold (datetime, event) pairs, oldest first, into a CommanderState."""
     state = state or CommanderState()
     for dt, e in events:
-        name = e.get("event")
-        state.last_event, state.last_event_time = name, jfiles.iso(dt)
-        for fn in HANDLERS.get(name, ()):
-            fn(state, e, dt)
+        apply_event(state, dt, e)
     return state
 
 

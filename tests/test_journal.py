@@ -283,10 +283,12 @@ class CliAndMcpTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {jfiles.ENV_JOURNAL_DIR: d}):
             write_journal(d, "2026-10-11T100000.01", SESSION + [ev(10, "Shutdown")])
             self.assertEqual(mcp_server.where_am_i()["system"], "Alpha Centauri")
-            rate = mcp_server.credit_rate(session_only=True, streams=["trading"], include_crew=True)
+            with mock.patch.object(mcp_server, "_run", return_value={"error": "no database"}):   # files only
+                rate = mcp_server.credit_rate(session_only=True, streams=["trading"], include_crew=True)
+            self.assertEqual(rate["source"], "files")
             self.assertEqual(rate["streams"]["trading"]["spent"], 1000)
             self.assertIn("crew_wages", rate)
-            self.assertIn("error", mcp_server.credit_rate(streams=["nope"]))
+            self.assertIn("error", mcp_server.credit_rate(streams=["nope"], source="files"))
 
     def test_mcp_enrich_failure_keeps_the_journal_answer(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {jfiles.ENV_JOURNAL_DIR: d}):
