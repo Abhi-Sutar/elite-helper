@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select, text, update
 
 from .database import insert_for
-from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Market, MarketUpdate, Meta,
+from .models import (Commodity, CommodityPrice, Faction, FactionHistory, FactionInfo, Market, MarketUpdate, Meta,
                      PriceHistory, Station, StationSync, System, SystemUpdate)
 
 RETENTION_DAYS = 30             # commodity data (history and stale markets)
@@ -86,6 +86,28 @@ def commodity_ids(session, symbols):
 
 
 # ---- meta ------------------------------------------------------------------------------------
+
+def upsert_faction_info(session, players, checked_at=None, source="edsm"):
+    """
+    Record whether factions are player factions: `players` is {faction name: bool}. Names match case-insensitively,
+    and the stored spelling is kept. Returns the number of factions written.
+    """
+    players = {n[:120]: bool(p) for n, p in players.items() if n and p is not None}
+    if not players:
+        return 0
+    checked_at = checked_at or datetime.now(timezone.utc)
+    existing = {n.lower(): n for (n,) in session.execute(
+        select(FactionInfo.name).where(func.lower(FactionInfo.name).in_([n.lower() for n in players])))}
+    for name, is_player in players.items():
+        stored = existing.get(name.lower())
+        if stored is None:
+            session.execute(insert_for(session)(FactionInfo.__table__).values(
+                name=name, is_player=is_player, checked_at=checked_at, source=source))
+        else:
+            session.execute(update(FactionInfo.__table__).where(FactionInfo.name == stored).values(
+                is_player=is_player, checked_at=checked_at, source=source))
+    return len(players)
+
 
 def replace_stations(session, system_id64, stations, fetched_at=None, source="edsm"):
     """
