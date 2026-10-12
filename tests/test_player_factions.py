@@ -278,7 +278,7 @@ class RefreshMissingTests(PlayerCase):
 
     def test_refresh_factions_options(self):
         dry = external.refresh_player_flags(self.s, dry_run=True)
-        self.assertEqual((dry["unchecked"], dry["requests"], dry["requests_needed_at_most"]), (4, 0, 3))
+        self.assertEqual((dry["unchecked"], dry["requests"], dry["requests_needed"]), (4, 0, 2))
         self.assertEqual(external.refresh_player_flags(self.s, dry_run=True, controlling_only=True)["unchecked"], 3)
         self.assertEqual(self.calls, [])
         out = io.StringIO()
