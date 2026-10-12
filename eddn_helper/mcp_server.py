@@ -111,7 +111,7 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
                  station_types: list[str] | None = None, sort: str = "distance",
                  min_faction_stations: int = 0, player_faction: bool | None = None,
                  state_since_hours: float | None = None, refresh_missing: bool = False,
-                 refresh_limit: int = 10) -> dict:
+                 refresh_limit: int = 10, refresh_stations: bool | None = None) -> dict:
     """
     Find systems matching ALL given criteria, nearest to `near` first (else most populated first).
     economies: any of these, e.g. ["Extraction", "Refinery"]; economy_scope: "system" (system economy, plus second
@@ -134,10 +134,13 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
     state_since_hours: with faction_state, keep only factions whose CURRENT run of that state began within the last N
     hours (worked out from the stored faction history; state_started_at and state_hours_ago are returned, and
     start_is_lower_bound true means history begins inside the run so it may be older).
-    refresh_missing: fetch from EDSM what the result systems lack - stations never fetched or older than a week, and
-    (with player_faction) factions with unknown player status - store it, and search again. At most refresh_limit
-    systems per call (default 10, about 2 seconds each because EDSM allows 1 request per second); the reply lists
-    `refreshed` systems and `refresh_pending`, how many result systems still lack data - call again to continue.
+    refresh_missing: fetch from EDSM only what this search needs and the result systems lack, store it, and search
+    again. With player_faction, that is the player status of the matching factions that have none (one request each;
+    a faction controlling several result systems is looked up once). Stations (two requests per system) are fetched
+    only when the search uses station filters (min_stations, station_types, min_faction_stations) or
+    refresh_stations is true; refresh_stations=false forces them off. At most refresh_limit systems per call
+    (default 10, max 30; EDSM allows 1 request per second); the reply lists `refreshed` systems and
+    `refresh_pending`, how many result systems still lack data - call again to continue.
     Needs the server's ELITE_HELPER_INGEST_DATABASE_URL (a writer connection); otherwise `refreshed` shows the
     read-only error.
     sort: "distance" (default), "population", "influence", "freshest" or "name".
@@ -167,8 +170,11 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
 
     if not refresh_missing:
         return _run(search)
+    if refresh_stations is None:
+        refresh_stations = bool(min_stations or station_types or min_faction_stations)
     return _run_fetching(True, lambda session: live.refresh_missing(
-        session, lambda: search(session), max(0, min(refresh_limit, 30)), 168, player_faction is not None))
+        session, lambda: search(session), max(0, min(refresh_limit, 30)), 168, player_faction is not None,
+        need_stations=refresh_stations))
 
 
 @mcp.tool()

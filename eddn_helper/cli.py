@@ -1059,6 +1059,9 @@ def build_parser():
     sp.add_argument("--refresh-stations", action="store_true",
                     help="fetch stations (and player-faction status) from EDSM for result systems lacking them "
                          "(needs a writable database)")
+    sp.add_argument("--refresh-players", action="store_true",
+                    help="fetch only the player status of the matching factions from EDSM (one request per system, no "
+                         "stations; needs a writable database)")
     sp.add_argument("--refresh-limit", type=int, default=30, help="max systems to fetch per run (1 request/second)")
     sp.add_argument("--stations-max-age-hours", type=float, default=168,
                     help="also re-fetch stations older than this with --refresh-stations (default 168)")
