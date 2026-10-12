@@ -10,8 +10,8 @@ import bisect
 from sqlalchemy import case, func, select
 
 from . import config, database, lock, store
-from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Market, MarketUpdate, PriceHistory,
-                     Station, StationSync, System, SystemUpdate)
+from .models import (Commodity, CommodityPrice, Faction, FactionHistory, JournalEvent, JournalFile, Market, MarketUpdate,
+                     PriceHistory, Station, StationSync, System, SystemUpdate)
 
 
 def iso(dt):
@@ -776,6 +776,8 @@ def data_status(session):
             "systems": n(System), "factions": n(Faction), "markets": n(Market),
             "commodity_prices": n(CommodityPrice), "price_history_rows": n(PriceHistory),
             "faction_history_rows": n(FactionHistory),
+            "journal_files": n(JournalFile), "journal_events": n(JournalEvent),
+            "newest_journal_event": iso(session.execute(select(func.max(JournalEvent.ts))).scalar_one()),
             "newest_market_update": iso(newest_m), "newest_faction_update": iso(newest_s),
             "last_message_minutes_ago": round((time.time() - int(last_msg)) / 60, 1) if last_msg else None,
             "listener_heartbeat_minutes_ago": hb_age,

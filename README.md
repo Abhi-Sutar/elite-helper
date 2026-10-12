@@ -126,26 +126,74 @@ snapshot** (economy changes are not kept as history) and only covers systems the
 lookup) has seen; `economy --live` refreshes a missing/stale system from EDSM and lists stations EDSM knows that we have
 no market for (not stored). Searching the whole galaxy via Spansh is not implemented yet.
 
-## Your journals: where you are, credits per hour
+## Your journals: where you are, credits per hour, history
 
-These read the game's own journal files (default `%USERPROFILE%\Saved Games\Frontier Developments\Elite Dangerous`,
-override with `--journal-dir` or `ELITE_JOURNAL_DIR`) and need no database.
+The game's own journal files (default `%USERPROFILE%\Saved Games\Frontier Developments\Elite Dangerous`, override with
+`--journal-dir` or `ELITE_JOURNAL_DIR`) are used in two ways.
+
+**Straight from the files (no database):**
 
 ```
-python -m eddn_helper where [--enrich [--live]]                       # system, station, ship, credits; --enrich adds EDDN data for the system/station
-python -m eddn_helper credit-rate [--session] [--since 2026-10-01T00:00:00] [--max-gap-minutes 20] [--streams trading,bounty] [--crew-wages]
+python -m eddn_helper where [--enrich [--live]]     # system, station, ship, credits; --enrich adds EDDN data for the system/station
+python -m eddn_helper credit-rate [--session] [--since 2026-10-01T00:00:00] [--max-gap-minutes 20] [--streams trading,bounty] [--crew-wages] [--from-db]
 ```
 
-MCP: `where_am_i(enrich, live_lookup)` and `credit_rate(since_hours, session_only, max_gap_minutes, streams, include_crew)`.
+MCP: `where_am_i(enrich, live_lookup)` and `credit_rate(since_hours, session_only, max_gap_minutes, streams, include_crew, source)`.
 `where` is the **last known** position: `game_running` is false after a `Shutdown` event (or a long-silent journal
 without one) and `last_event_age_seconds` says how stale it is. `credits` is the balance at login; `status.balance`
 (from `Status.json`) is live while the game runs. Credit rate sums active playtime per journal file (time between
 sessions never counts) over trading, bounties, missions, exploration, carrier, carrier market (approximate, from
 balance snapshots), maintenance, rebuys and crew wages; `ed_credit_rate.py` prints the same report.
 
+**History and current state, from the database (the ED Discovery way):** every journal line is stored as an event
+(raw JSON plus the system/station you were at), and each view replays the stored events.
+
+| Command | MCP tool | Shows |
+|---|---|---|
+| `history` | `journal_search` | search all events by `--event`, `--system`, `--station`, `--text`, `--days/--since/--until` |
+| `travel` | `travel_log` | jumps with distance, fuel, minutes stayed; totals |
+| `visited [--stations]` | `visited_systems`, `visited_stations` | what you visited / docked at, counts, first and last |
+| `sessions` | `play_sessions` | play sessions (one per journal file) |
+| `ledger` | `ledger` | every credit movement by category, running total (`--category`) |
+| `credit-rate --from-db` | `credit_rate` (default source) | the same analysis from stored events, much faster over the whole history |
+| `cargo`, `materials` | `cargo`, `materials` | last snapshot moved forward through later trades / collection / crafting |
+| `ships` | `ships` | current ship with modules and engineering, stored fleet |
+| `missions` | `missions` | active, expired-unresolved, recently finished |
+| `ranks` | `reputation` | ranks with progress, superpower reputation |
+| `stats` | `commander_stats` | the game's Statistics snapshot (`--section`) |
+| `carrier` | `carrier_status` | your fleet carrier as last reported |
+
+All accept `--commander`, `--journal-dir`, `--no-sync`, `--json`; `history`, `travel` and `ledger` also `--csv`.
+
+**Staying up to date - no service required.** Each of these queries first compares the database with the journal
+files (a few `stat` calls plus one small query) and ingests only the new lines before answering, so the answer
+includes the session you just played. Every reply carries `journal_freshness` (`db_behind_journal`, what was
+ingested just now, newest event stored vs newest journal write, `ingest_error`). Ingest needs a database connection
+that can write; the MCP normally uses the read-only `elite_reader` role, so give it a writer for this with
+`ELITE_HELPER_INGEST_DATABASE_URL` (same format as `ELITE_HELPER_DATABASE_URL`, e.g. the `elite_writer` URL). Without
+it the tools still answer from what is stored and say `db_behind_journal: true` with the reason (and `credit_rate`
+falls back to reading the files). Only one ingest runs at a time (a lock file next to the database).
+
+```
+python -m eddn_helper journal-status               # state: current | behind | no_writer | no_journals; files, events, last ingest/error, ingester service
+python -m eddn_helper journal-sync [--rebuild]     # ingest now (about 20-35 s for ~200 sessions the first time, then seconds)
+python -m eddn_helper journal-sync --watch         # keep ingesting every 30 s while you play (the optional service)
+```
+
+MCP: `journal_sync_status`. **Optional background ingester:** `.\scripts\install-journal-task.ps1` registers task
+`EliteHelperJournal` (at logon, `journal-sync --watch`, log `%LOCALAPPDATA%\elite-helper\journal-ingester.log`;
+`restart-journal-task.ps1`, `uninstall-journal-task.ps1`). Nothing depends on it; with it running the on-demand check
+simply finds nothing to do, and `journal-status` shows its heartbeat and task state. `ELITE_HELPER_JOURNAL_IGNORE`
+(comma list of event names) skips storing noisy events; by default everything is stored (about 100 MB for 190k events
+including indexes).
+
 Code layout, so more can be added: `journal/files.py` (locate/read), `journal/state.py` (commander state; add an
-event with `@handles("EventName")`), `journal/status.py` (`Status.json`), `journal/income.py` (credit rate),
-`journal/context.py` (what the CLI/MCP return). Tests build synthetic journals (`tests/test_journal.py`).
+event with `@handles("EventName")`), `journal/status.py` (`Status.json`), `journal/income.py` (credit rate, ledger),
+`journal/ingest.py` (files -> database, freshness check, status), `journal/queries.py` (history queries) and
+`journal/views.py` (current-state views), `journal/context.py` (`where`). Tests build synthetic journals
+(`tests/test_journal*.py`). Deploying the database part applies migration `0006` (three new tables): the listener
+migrates at start-up (`deploy.ps1` restarts it because migrations changed), and until then the MCP reports a schema
+mismatch like for any other migration.
 
 ## Time zones
 
@@ -296,7 +344,10 @@ dies, and reconnects after ~90 s of silence (e.g. after sleep). Sleep/hibernate 
 Tools: `data_status`, `system_info`, `system_economy`, `find_systems`, `faction_stations`, `faction_history`,
 `faction_timeline`, `faction_presence`, `station_market`, `price_history`, `station_traffic`, `system_traffic`,
 `busiest_stations`, `busiest_systems`, `station_activity`, `find_commodity`, `best_trades`, plus the journal tools
-`where_am_i` and `credit_rate`. The listener must be running separately (the journal tools don't need it).
+`where_am_i`, `credit_rate`, `journal_search`, `travel_log`, `visited_systems`, `visited_stations`, `play_sessions`, `ledger`,
+`cargo`, `materials`, `ships`, `missions`, `reputation`, `commander_stats`, `carrier_status`, `journal_sync_status`.
+The listener must be running separately (the journal tools only need the database, and `where_am_i` not even that).
+To let the MCP ingest new journal lines itself, add `ELITE_HELPER_INGEST_DATABASE_URL` (a writer URL) to its `env`.
 For Claude Code, the plain CLI above works as-is through the shell.
 
 ## Limitations
