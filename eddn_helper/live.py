@@ -35,40 +35,92 @@ def refresh_system_stations(session, name, id64=None):
         return None, READ_ONLY_MSG
 
 
-def refresh_missing(session, search, limit, stations_max_age_hours=168, need_players=False, log=None):
-    """
-    Run `search()` (a find_systems call returning its result dict), fetch from EDSM what the result systems lack
-    (stations never fetched or older than `stations_max_age_hours`; with `need_players`, systems with a matching
-    faction whose player status is unknown), at most `limit` systems, and search again. `log(line)` reports each fetch.
-    Returns the final result with `refreshed`: [{system, stations, error}] and `refresh_pending`: result systems still
-    lacking data because the limit was reached.
-    """
-    res, tried, done = search(), set(), []
+def refresh_system_players(session, name):
+    """Fetch only the player status of one system's factions (one EDSM request, no stations).
+    Returns ({faction name: bool}_or_None, error_message_or_None)."""
+    try:
+        return external.refresh_players(session, name), None
+    except external.LiveLookupError as e:
+        return None, str(e)
+    except DBAPIError:
+        session.rollback()
+        return None, READ_ONLY_MSG
 
-    def lacking(r):
-        return (not r["stations_known"] or (r["stations_fetched_age_hours"] or 0) > stations_max_age_hours
-                or (need_players and any(f.get("is_player") is None for f in r["matching_factions"])))
-    budget = limit
-    while "error" not in res and budget > 0:
-        todo = [r for r in res["results"] if r["system"] not in tried and lacking(r)][:budget]
+
+def refresh_missing(session, search, limit, stations_max_age_hours=168, need_players=False, log=None,
+                    need_stations=True):
+    """
+    Run `search()` (a find_systems call returning its result dict), fetch from EDSM only what the search needs and the
+    result systems lack, and search again. At most `limit` systems are fetched; `log(line)` reports each fetch.
+      need_stations - stations never fetched or older than `stations_max_age_hours` (two requests per system, which
+          also settles the player status of that system's factions)
+      need_players  - the player status of the matching factions that have none (one request per system; a faction
+          controlling several result systems is looked up once, from the system covering the most unknown factions)
+    Returns the final result with `refreshed`: [{system, stations, players_checked, error}] and `refresh_pending`: the
+    result systems still lacking what was asked for (the limit was reached, or EDSM did not have it).
+    """
+    res, done, budget = search(), [], limit
+    tried, fetched = set(), False
+
+    def lacks_stations(r):
+        return need_stations and (not r["stations_known"] or (r["stations_fetched_age_hours"] or 0) > stations_max_age_hours)
+
+    def unknown_players(result):
+        out = {}
+        for r in result["results"]:
+            for f in r["matching_factions"]:
+                if f.get("is_player") is None:
+                    out.setdefault(f["faction"].lower(), set()).add(r["system"])
+        return out
+
+    def note(entry, text):
+        done.append(entry)
+        if log:
+            log(text)
+
+    while need_stations and "error" not in res and budget > 0:
+        todo = [r for r in res["results"] if r["system"] not in tried and lacks_stations(r)][:budget]
         if not todo:
             break
         for r in todo:
             tried.add(r["system"])
             budget -= 1
             n, err = refresh_system_stations(session, r["system"], r["id64"])
-            done.append({"system": r["system"], "stations": n, "error": err or (None if n is not None
-                                                                              else "not found at EDSM")})
-            if log:
-                log(f"refreshed stations of {r['system']}: "
-                    + (f"{n} stored" if err is None and n is not None else err or "not found at EDSM"))
+            err = err or (None if n is not None else "not found at EDSM")
+            note({"system": r["system"], "stations": n, "players_checked": None, "error": err},
+                 f"refreshed stations of {r['system']}: " + (f"{n} stored" if err is None else err))
+            fetched = True
             if err:
                 budget = 0
                 break
         res = search()
+    if need_players and "error" not in res and budget > 0:
+        unknown, asked = unknown_players(res), set()
+        while unknown and budget > 0:
+            cover = {}
+            for name, systems in unknown.items():
+                for sysname in systems - asked:
+                    cover.setdefault(sysname, set()).add(name)
+            if not cover:
+                break
+            best = max(cover, key=lambda k: len(cover[k]))
+            asked.add(best)
+            budget -= 1
+            flags, err = refresh_system_players(session, best)
+            note({"system": best, "stations": None, "players_checked": None if flags is None else len(flags),
+                  "error": err}, f"checked player factions of {best}: " + (err or f"{len(flags)} factions"))
+            fetched = True
+            if err:
+                break
+            for name in {n.lower() for n in flags}:
+                unknown.pop(name, None)
+        if fetched:
+            res = search()
     if "error" not in res:
-        res["refreshed"] = done
-        res["refresh_pending"] = sum(1 for r in res["results"] if r["system"] not in tried and lacking(r))
+        pending = {r["system"] for r in res["results"] if lacks_stations(r)}
+        if need_players:
+            pending |= {sysname for systems in unknown_players(res).values() for sysname in systems}
+        res["refreshed"], res["refresh_pending"] = done, len(pending)
     return res
 
 

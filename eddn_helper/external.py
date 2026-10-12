@@ -157,6 +157,16 @@ def refresh_stations(session, system, system_id64=None):
     return n
 
 
+def refresh_players(session, system):
+    """Ask EDSM which of one system's factions are player factions and store it (a single request).
+    Returns {faction name: bool}; empty when EDSM does not say."""
+    facs = _get("/api-system-v1/factions", systemName=system)
+    flags = _player_flags(facs.get("factions") if isinstance(facs, dict) else None)
+    store.upsert_faction_info(session, flags)
+    session.commit()
+    return flags
+
+
 def unchecked_factions(session, controlling_only=False, near=None, ly=None):
     """
     Factions with no player status yet, as {lower(name): {"name": str, "systems": {system_id64: system name}}}: the

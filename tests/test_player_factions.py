@@ -232,7 +232,7 @@ class RefreshMissingTests(PlayerCase):
     def test_refresh_missing_fetches_stores_and_researches(self):
         from eddn_helper import live
         with mock.patch.object(external, "_get", side_effect=self.edsm):
-            res = live.refresh_missing(self.s, self.search, limit=3, need_players=True)
+            res = live.refresh_missing(self.s, self.search, limit=3, need_players=True, need_stations=False)
         self.assertEqual([r["system"] for r in res["refreshed"]], ["Alpha", "Beta", "Gamma"])
         self.assertEqual(res["refresh_pending"], 0)       # Beta is an NPC now, so it dropped out of the results
         self.assertEqual([r["system"] for r in res["results"]], ["Alpha", "Gamma"])
@@ -241,7 +241,7 @@ class RefreshMissingTests(PlayerCase):
     def test_limit_leaves_the_rest_pending(self):
         from eddn_helper import live
         with mock.patch.object(external, "_get", side_effect=self.edsm):
-            res = live.refresh_missing(self.s, self.search, limit=1, need_players=True)
+            res = live.refresh_missing(self.s, self.search, limit=1, need_players=True, need_stations=False)
         self.assertEqual(len(res["refreshed"]), 1)
         self.assertEqual(res["refresh_pending"], 2)
 
@@ -259,6 +259,40 @@ class RefreshMissingTests(PlayerCase):
             res = mcp_server.find_systems(controlling_only=True, player_faction=True, refresh_missing=True)
         self.assertEqual(len(res["refreshed"]), 3)
         self.assertEqual(queries._player_flags(self.s, ["p1", "n1", "p2"]), {"p1": True, "n1": False, "p2": True})
+
+    def test_a_faction_controlling_several_systems_is_looked_up_once(self):
+        from eddn_helper import live
+        self.feed(4, "Delta", [(2, expanding("P2"))])          # P2 controls Gamma and Delta
+        self.flags({"P1": True, "N1": False})                  # only P2 is unknown
+        payload = {"Gamma": ["P2"], "Delta": ["P2"]}
+
+        def edsm(path, **p):
+            self.calls.append((path, p["systemName"]))
+            return {"factions": [{"name": n, "isPlayer": True} for n in payload[p["systemName"]]]}
+        with mock.patch.object(external, "_get", side_effect=edsm):
+            res = live.refresh_missing(self.s, self.search, limit=5, need_players=True, need_stations=False)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(res["refresh_pending"], 0)
+
+    def test_stations_are_only_fetched_when_asked_for(self):
+        from eddn_helper import live
+        with mock.patch.object(external, "_get", side_effect=self.edsm):
+            live.refresh_missing(self.s, self.search, limit=1, need_players=False, need_stations=True)
+        self.assertEqual([path for path, _ in self.calls],
+                         ["/api-system-v1/stations", "/api-system-v1/factions"])   # stations, plus the free player flags
+
+    def test_mcp_fetches_stations_only_for_station_filters(self):
+        def run(**kw):
+            self.calls.clear()
+            with mock.patch.object(mcp_server, "_get_engine"), \
+                    mock.patch.object(mcp_server.live, "writer_session", return_value=self.s), \
+                    mock.patch.object(external, "_get", side_effect=self.edsm):
+                mcp_server.find_systems(controlling_only=True, player_faction=True, refresh_missing=True,
+                                        refresh_limit=1, **kw)
+            return {path for path, _ in self.calls}
+        self.assertEqual(run(), {"/api-system-v1/factions"})
+        self.assertIn("/api-system-v1/stations", run(min_stations=1))
+        self.assertIn("/api-system-v1/stations", run(refresh_stations=True))
 
     def test_writer_session_needs_the_variable(self):
         from eddn_helper import live

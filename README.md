@@ -132,8 +132,11 @@ python -m eddn_helper find-systems --economy Industrial --min-pop 1000000 --cont
 **Fetching what is missing.** Player status and stations come from EDSM, one system at a time (1 request/second, two
 requests per system). Ways to fill them in:
 
-- `find-systems ... --refresh-stations --refresh-limit N` fetches for the result systems that lack data.
-- MCP `find_systems(..., refresh_missing=true, refresh_limit=10)` does the same from chat (replies list `refreshed` and
+- `find-systems ... --refresh-players --refresh-limit N` fetches **only** the player status of the matching factions
+  (one request per system; a faction controlling several result systems is looked up once). `--refresh-stations`
+  fetches stations too (two requests per system) for result systems that lack them.
+- MCP `find_systems(..., refresh_missing=true, refresh_limit=10)` fetches only what the search needs (player status
+  with `player_faction`; stations only with station filters or `refresh_stations=true`) from chat (replies list `refreshed` and
   `refresh_pending`; call again to continue). The MCP connects as the read-only reader, so set
   `ELITE_HELPER_INGEST_DATABASE_URL` to a writer URL in its `env`; only the EDSM fetch uses it. `system_info` /
   `system_economy` with `live_lookup=true` use it too.
