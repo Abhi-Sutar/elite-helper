@@ -307,8 +307,9 @@ def cmd_refresh_factions(args, session):
 
     def human(d):
         if args.dry_run:
-            print(f"{d['unchecked']} factions have no player status yet; at most {d['requests_needed_at_most']} EDSM "
-                  f"requests (about 1 per second) would settle them")
+            print(f"{d['unchecked']} factions have no player status yet; about {d['requests_needed']} EDSM "
+                  f"requests (1 per second, so roughly {d['requests_needed'] / 60:.0f} minutes) would settle them, "
+                  f"if EDSM reports a status for each")
             return
         print(f"{d['requests']} requests, {d['stored']} statuses stored, {d['remaining']} factions still unchecked"
               + (f" (stopped: {d['error']})" if d["error"] else

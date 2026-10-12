@@ -202,13 +202,22 @@ def refresh_player_flags(session, limit=50, controlling_only=False, near=None, l
     for key, f in todo.items():
         for sid, sname in f["systems"].items():
             names_of.setdefault((sid, sname), set()).add(key)
-    if dry_run:
-        out["requests_needed_at_most"] = len(names_of)
-        return out
     pending = set(todo)
-    while out["requests"] < limit and pending:
+
+    def next_system():
         best = max((k for k in names_of if k not in tried), key=lambda k: len(names_of[k] & pending), default=None)
-        if best is None or not names_of[best] & pending:
+        return best if best is not None and names_of[best] & pending else None
+    if dry_run:     # the same greedy choice without asking EDSM: how many requests the real run would need
+        n = 0
+        while pending and (best := next_system()):
+            tried.add(best)
+            pending -= names_of[best]
+            n += 1
+        out["requests_needed"] = n
+        return out
+    while out["requests"] < limit and pending:
+        best = next_system()
+        if best is None:
             break
         tried.add(best)
         out["requests"] += 1
