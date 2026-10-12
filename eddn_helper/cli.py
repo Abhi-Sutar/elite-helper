@@ -129,10 +129,19 @@ def faction_csv(d):
 
 TIMELINE_COLUMNS = ["field", "value", "trend", "start", "last_seen", "ended_at"]
 
+def player_mark(f, unknown=False):
+    """'[P] ' for a player faction; with `unknown`, '[?] ' when its status has not been fetched yet."""
+    return "[P] " if f.get("is_player") else "[?] " if unknown and f.get("is_player") is None else ""
+
+
 def hits_text(f):
     """'active, pending (trend 1)': where the searched state was found for one faction."""
-    return ", ".join(h["in"] + (f" (trend {h['trend']})" if h["trend"] is not None else "") for h in f["found_in"]) \
+    text = ", ".join(h["in"] + (f" (trend {h['trend']})" if h["trend"] is not None else "") for h in f["found_in"]) \
         or f"{f['influence_pct']}%"
+    if f.get("state_started_at"):
+        text += f", since {f['state_started_at']} ({f['state_hours_ago']}h ago" \
+                + (", or earlier" if f.get("start_is_lower_bound") else "") + ")"
+    return text
 
 
 SYSTEMS_COLUMNS = ["system", "distance_ly", "population", "economy", "second_economy", "matched_economy", "factions",
@@ -143,7 +152,7 @@ def systems_csv(d):
     rows = []
     for r in d.get("results", []) if "error" not in d else []:
         rows.append(dict(
-            r, factions="; ".join(f"{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
+            r, factions="; ".join(f"{player_mark(f, True)}{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
                                   for f in r["matching_factions"]),
             stations="; ".join(f"{s['station']} [{'/'.join(s['economies'])}]" for s in r["stations"]),
             demand="; ".join(f"{x['commodity']}@{x['station']} {x['demand']}" for x in r["demand"])))
@@ -266,7 +275,9 @@ def _find_systems(args, session):
         government=args.government, security=args.security, in_conflict=conflict, conflict_type=args.conflict_type,
         faction_name=args.faction, min_influence=args.min_influence, max_influence=args.max_influence,
         happiness=args.happiness, state_trend=args.trend, min_stations=args.min_stations,
-        station_types=args.station_type, sort=args.sort, min_faction_stations=args.min_faction_stations)
+        station_types=args.station_type, sort=args.sort, min_faction_stations=args.min_faction_stations,
+        player_faction={"yes": True, "no": False}.get(args.player_faction),
+        state_since_hours=args.state_since_hours)
 
 
 def refresh_system_stations(session, name, id64=None):
@@ -318,7 +329,8 @@ def cmd_find_systems(args, session):
         while budget > 0:
             stale = args.stations_max_age_hours
             todo = [r for r in res["results"] if r["system"] not in tried and (
-                not r["stations_known"] or (r["stations_fetched_age_hours"] or 0) > stale)][:budget]
+                not r["stations_known"] or (r["stations_fetched_age_hours"] or 0) > stale
+                or (args.player_faction and any(f["is_player"] is None for f in r["matching_factions"])))][:budget]
             if not todo:
                 break
             for r in todo:
@@ -340,7 +352,7 @@ def cmd_find_systems(args, session):
             return
 
         def factions(r):
-            return "; ".join(f"{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
+            return "; ".join(f"{player_mark(f, True)}{f['faction']} ({f['state'] or '-'}): {hits_text(f)}"
                              + (f", {f['stations_controlled']} stn" if r["stations_known"] else "")
                              for f in r["matching_factions"]) or "-"
 
@@ -350,7 +362,7 @@ def cmd_find_systems(args, session):
         cols = [("System", "system"), ("Ly", lambda r: r["distance_ly"] if r["distance_ly"] is not None else "-"),
                 ("Pop", lambda r: f"{r['population']:,}" if r["population"] else "-"), ("Economy", economy)]
         if any((args.state, args.faction, args.happiness, args.controlling_only, args.min_influence is not None,
-                args.max_influence is not None)):
+                args.max_influence is not None, args.player_faction)):
             cols.append(("Factions", factions))
         cols += [("Stations", lambda r: f"{len(r['stations'])}" + ("" if r["stations_known"] else "?")),
                  ("Faction age", lambda r: fmt_age(r["factions_age_hours"]))]
@@ -372,7 +384,7 @@ def print_factions(factions):
         parts += [f"{s}(pending)" for s in f["pending_states"]]
         parts += [f"{s}(recovering)" for s in f["recovering_states"]]
         return ", ".join(parts) or "None"
-    table(factions, [("Faction", lambda f: ("* " if f["is_controlling"] else "  ") + f["name"]),
+    table(factions, [("Faction", lambda f: ("* " if f["is_controlling"] else "  ") + player_mark(f) + f["name"]),
                      ("Infl%", "influence_pct"), ("Gov", "government"), ("Allegiance", "allegiance"),
                      ("Mood", "happiness"), ("States", states)])
 
@@ -1043,8 +1055,14 @@ def build_parser():
                     help="order: distance (default), population, influence, freshest, name")
     sp.add_argument("--min-faction-stations", type=int, default=0,
                     help="the matching faction controls at least N stations (needs EDSM station data)")
+    sp.add_argument("--player-faction", choices=["yes", "no"],
+                    help="matching faction is / is not a player faction (status from EDSM; unchecked factions are "
+                         "kept and flagged)")
+    sp.add_argument("--state-since-hours", type=float,
+                    help="with --state: the faction's current run of that state began within N hours (from history)")
     sp.add_argument("--refresh-stations", action="store_true",
-                    help="fetch stations from EDSM for result systems without station data (needs a writable database)")
+                    help="fetch stations (and player-faction status) from EDSM for result systems lacking them "
+                         "(needs a writable database)")
     sp.add_argument("--refresh-limit", type=int, default=30, help="max systems to fetch per run (1 request/second)")
     sp.add_argument("--stations-max-age-hours", type=float, default=168,
                     help="also re-fetch stations older than this with --refresh-stations (default 168)")
