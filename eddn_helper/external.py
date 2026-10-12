@@ -157,6 +157,83 @@ def refresh_stations(session, system, system_id64=None):
     return n
 
 
+def unchecked_factions(session, controlling_only=False, near=None, ly=None):
+    """
+    Factions with no player status yet, as {lower(name): {"name": str, "systems": {system_id64: system name}}}: the
+    systems each is present in, so one EDSM request per system can settle every unchecked faction there.
+    controlling_only: only factions that control at least one system; near + ly: only systems within ly of `near`
+    (a system name). Raises ValueError for an unknown `near`.
+    """
+    from sqlalchemy import func, select
+    from .models import Faction, FactionInfo, System
+    from . import queries
+    origin = None
+    if near:
+        origin, err = queries._resolve_origin(session, near)
+        if err:
+            raise ValueError(err["error"])
+    q = (select(Faction.name, Faction.is_controlling, System.id64, System.name, System.x, System.y, System.z)
+         .join(System, System.id64 == Faction.system_id64)
+         .outerjoin(FactionInfo, func.lower(FactionInfo.name) == func.lower(Faction.name))
+         .where(FactionInfo.name.is_(None)))
+    found = {}
+    for name, controls, sid, sname, x, y, z in session.execute(q):
+        if origin is not None:
+            d = queries.distance(origin, {"x": x, "y": y, "z": z})
+            if d is None or (ly is not None and d > ly):
+                continue
+        e = found.setdefault(name.lower(), {"name": name, "systems": {}, "controls": False})
+        e["systems"][sid] = sname
+        e["controls"] = e["controls"] or bool(controls)
+    return {k: {"name": v["name"], "systems": v["systems"]} for k, v in found.items()
+            if v["controls"] or not controlling_only}
+
+
+def refresh_player_flags(session, limit=50, controlling_only=False, near=None, ly=None, dry_run=False, log=None):
+    """
+    Fetch player status from EDSM for every faction that has none yet, a few systems at a time: each request returns
+    all the factions of one system, and the system covering the most unchecked factions is asked next.
+    At most `limit` requests (1 per second). Returns {"unchecked", "requests", "stored", "remaining", "error"}.
+    A faction EDSM does not report a status for stays unchecked (and is not asked about again in this run).
+    """
+    todo = unchecked_factions(session, controlling_only, near, ly)
+    out = {"unchecked": len(todo), "requests": 0, "stored": 0, "remaining": len(todo), "error": None}
+    names_of, tried = {}, set()
+    for key, f in todo.items():
+        for sid, sname in f["systems"].items():
+            names_of.setdefault((sid, sname), set()).add(key)
+    if dry_run:
+        out["requests_needed_at_most"] = len(names_of)
+        return out
+    pending = set(todo)
+    while out["requests"] < limit and pending:
+        best = max((k for k in names_of if k not in tried), key=lambda k: len(names_of[k] & pending), default=None)
+        if best is None or not names_of[best] & pending:
+            break
+        tried.add(best)
+        out["requests"] += 1
+        try:
+            facs = _get("/api-system-v1/factions", systemName=best[1])
+            flags = _player_flags(facs.get("factions") if isinstance(facs, dict) else None)
+            out["stored"] += store.upsert_faction_info(session, flags)
+            session.commit()
+        except LiveLookupError as e:
+            out["error"] = str(e)
+            break
+        except Exception as e:      # a read-only connection: say so instead of a stack trace
+            from sqlalchemy.exc import DBAPIError
+            if not isinstance(e, DBAPIError):
+                raise
+            session.rollback()
+            out["error"] = "database connection is read-only (or write failed); use the writer URL with --db"
+            break
+        pending -= {n.lower() for n in flags}
+        if log:
+            log(f"{best[1]}: {len(flags)} factions checked, {len(pending)} unchecked left")
+    out["remaining"] = len(pending)
+    return out
+
+
 def fetch_market(session, station, system=None):
     """Fetch a station's market from EDSM (needs the system name). Returns True if stored."""
     if not system:

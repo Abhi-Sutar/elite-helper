@@ -199,10 +199,93 @@ class InterfaceTests(PlayerCase):
         self.assertIn("[P] P1", csv_text)
 
     def test_mcp_tool_passes_the_options_through(self):
-        with mock.patch.object(mcp_server, "_run") as run:
-            mcp_server.find_systems(player_faction=True, state_since_hours=24.0)
-        kw = run.call_args.kwargs
-        self.assertEqual((kw["player_faction"], kw["state_since_hours"]), (True, 24.0))
+        with mock.patch.object(mcp_server, "_run", side_effect=lambda fn, *a, **k: fn(self.s, *a, **k)):
+            res = mcp_server.find_systems(player_faction=True, faction_state="Expansion", state_since_hours=24.0,
+                                            controlling_only=True)
+        self.assertNotIn("error", res, res)
+        self.assertEqual(res["criteria"]["player_faction"], True)
+        self.assertEqual(res["criteria"]["state_since_hours"], 24.0)
+
+
+class RefreshMissingTests(PlayerCase):
+    """Fetching from EDSM when the MCP/CLI finds systems lacking data, and the bulk faction command."""
+
+    def setUp(self):
+        super().setUp()
+        self.feed(1, "Alpha", [(2, expanding("P1"))])
+        self.feed(2, "Beta", [(2, expanding("N1"))])
+        self.feed(3, "Gamma", [(2, expanding("P2"))], others=("N1", "Filler"))
+        self.calls = []
+
+    def edsm(self, path, **p):
+        self.calls.append((path, p["systemName"]))
+        sysname = p["systemName"]
+        if path.endswith("/factions"):
+            return {"factions": [{"name": n, "isPlayer": n.startswith("P")} for n in
+                                 {"Alpha": ["P1", "Filler"], "Beta": ["N1", "Filler"],
+                                  "Gamma": ["P2", "N1", "Filler"]}[sysname]]}
+        return {"id64": {"Alpha": 1, "Beta": 2, "Gamma": 3}[sysname], "name": sysname, "stations": []}
+
+    def search(self):
+        return queries.find_systems(self.s, controlling_only=True, player_faction=True, sort="name")
+
+    def test_refresh_missing_fetches_stores_and_researches(self):
+        from eddn_helper import live
+        with mock.patch.object(external, "_get", side_effect=self.edsm):
+            res = live.refresh_missing(self.s, self.search, limit=3, need_players=True)
+        self.assertEqual([r["system"] for r in res["refreshed"]], ["Alpha", "Beta", "Gamma"])
+        self.assertEqual(res["refresh_pending"], 0)       # Beta is an NPC now, so it dropped out of the results
+        self.assertEqual([r["system"] for r in res["results"]], ["Alpha", "Gamma"])
+        self.assertEqual(res["faction_players_unknown"], 0)
+
+    def test_limit_leaves_the_rest_pending(self):
+        from eddn_helper import live
+        with mock.patch.object(external, "_get", side_effect=self.edsm):
+            res = live.refresh_missing(self.s, self.search, limit=1, need_players=True)
+        self.assertEqual(len(res["refreshed"]), 1)
+        self.assertEqual(res["refresh_pending"], 2)
+
+    def test_read_only_connection_is_reported_not_raised(self):
+        from sqlalchemy.exc import ProgrammingError
+        from eddn_helper import live
+        with mock.patch.object(external, "refresh_stations",
+                               side_effect=ProgrammingError("x", {}, Exception("denied"))):
+            res = live.refresh_missing(self.s, self.search, limit=5, need_players=True)
+        self.assertEqual(res["refreshed"][0]["error"], live.READ_ONLY_MSG)
+        self.assertEqual(len(res["refreshed"]), 1)
+
+    def test_mcp_refresh_uses_the_writer_session(self):
+        with mock.patch.object(mcp_server, "_get_engine"),                 mock.patch.object(mcp_server.live, "writer_session", return_value=self.s),                 mock.patch.object(external, "_get", side_effect=self.edsm):
+            res = mcp_server.find_systems(controlling_only=True, player_faction=True, refresh_missing=True)
+        self.assertEqual(len(res["refreshed"]), 3)
+        self.assertEqual(queries._player_flags(self.s, ["p1", "n1", "p2"]), {"p1": True, "n1": False, "p2": True})
+
+    def test_writer_session_needs_the_variable(self):
+        from eddn_helper import live
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("ELITE_HELPER_INGEST_DATABASE_URL", None)
+            self.assertIsNone(live.writer_session())
+
+    def test_refresh_factions_asks_the_system_covering_the_most_and_stops_at_the_limit(self):
+        with mock.patch.object(external, "_get", side_effect=self.edsm):
+            res = external.refresh_player_flags(self.s, limit=1)
+        self.assertEqual(self.calls, [("/api-system-v1/factions", "Gamma")])   # P2, N1 and Filler are all there
+        self.assertEqual((res["requests"], res["remaining"]), (1, 1))          # P1 still unchecked
+        with mock.patch.object(external, "_get", side_effect=self.edsm):
+            res = external.refresh_player_flags(self.s, limit=10)
+        self.assertEqual((res["requests"], res["remaining"], res["error"]), (1, 0, None))
+
+    def test_refresh_factions_options(self):
+        dry = external.refresh_player_flags(self.s, dry_run=True)
+        self.assertEqual((dry["unchecked"], dry["requests"], dry["requests_needed_at_most"]), (4, 0, 3))
+        self.assertEqual(external.refresh_player_flags(self.s, dry_run=True, controlling_only=True)["unchecked"], 3)
+        self.assertEqual(self.calls, [])
+        out = io.StringIO()
+        args = cli.build_parser().parse_args(["refresh-factions", "--dry-run", "--json"])
+        with contextlib.redirect_stdout(out):
+            args.func(args, self.s)
+        self.assertEqual(json.loads(out.getvalue())["unchecked"], 4)
 
 
 if __name__ == "__main__":

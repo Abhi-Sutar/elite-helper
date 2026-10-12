@@ -129,6 +129,18 @@ Expansion in the last two days (run `--refresh-stations` once so player status i
 python -m eddn_helper find-systems --economy Industrial --min-pop 1000000 --controlling-only --player-faction yes --state Expansion --state-in active --state-since-hours 48 --refresh-stations
 ```
 
+**Fetching what is missing.** Player status and stations come from EDSM, one system at a time (1 request/second, two
+requests per system). Ways to fill them in:
+
+- `find-systems ... --refresh-stations --refresh-limit N` fetches for the result systems that lack data.
+- MCP `find_systems(..., refresh_missing=true, refresh_limit=10)` does the same from chat (replies list `refreshed` and
+  `refresh_pending`; call again to continue). The MCP connects as the read-only reader, so set
+  `ELITE_HELPER_INGEST_DATABASE_URL` to a writer URL in its `env`; only the EDSM fetch uses it. `system_info` /
+  `system_economy` with `live_lookup=true` use it too.
+- `refresh-factions [--limit N] [--controlling-only] [--near SYSTEM --ly N] [--dry-run]` checks every faction that has
+  no player status yet in bulk, asking the system that covers the most unchecked factions each time. Needs a writer
+  URL (`--db`). `--dry-run` only counts. `--controlling-only` skips factions that control nothing.
+
 Each result lists the matching factions with where the state was found and the **raw trend** of pending/recovering
 states, the system's stations with their economies, and the age of the faction data. Notes: this is a **current
 snapshot** (economy changes are not kept as history) and only covers systems the listener (or an earlier `--live`
