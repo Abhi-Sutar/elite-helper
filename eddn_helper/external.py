@@ -45,6 +45,12 @@ def _epoch_ts(e):
     return datetime.fromtimestamp(e, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if e else None
 
 
+def _player_flags(fac_list):
+    """{faction name: bool} for the EDSM faction objects that say whether they are a player faction."""
+    return {f["name"]: f["isPlayer"] for f in fac_list or []
+            if f.get("name") and isinstance(f.get("isPlayer"), bool)}
+
+
 def fetch_system(session, name):
     """Fetch system info + factions from EDSM and store them. Returns True if found."""
     info = _get("/api-v1/system", systemName=name, showId=1, showCoordinates=1, showInformation=1)
@@ -82,6 +88,7 @@ def fetch_system(session, name):
             "is_controlling": f["name"] == (ctrl or i.get("faction")),
         } for f in fac_list if f.get("name")]
     store.upsert_system(session, system, factions, source="edsm")
+    store.upsert_faction_info(session, _player_flags(fac_list))
     session.commit()
     return True
 
@@ -141,6 +148,11 @@ def refresh_stations(session, system, system_id64=None):
     if id64 is None or session.get(System, id64) is None:
         return None
     n = store.replace_stations(session, id64, data["stations"])
+    try:  # also learn which of the system's factions are player factions; the stations are stored either way
+        facs = _get("/api-system-v1/factions", systemName=data["system"])
+        store.upsert_faction_info(session, _player_flags(facs.get("factions") if isinstance(facs, dict) else None))
+    except LiveLookupError:
+        pass
     session.commit()
     return n
 

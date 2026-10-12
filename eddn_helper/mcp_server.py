@@ -87,7 +87,8 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
                  min_influence: float | None = None, max_influence: float | None = None,
                  happiness: list[str] | None = None, state_trend: int | None = None, min_stations: int = 0,
                  station_types: list[str] | None = None, sort: str = "distance",
-                 min_faction_stations: int = 0) -> dict:
+                 min_faction_stations: int = 0, player_faction: bool | None = None,
+                 state_since_hours: float | None = None) -> dict:
     """
     Find systems matching ALL given criteria, nearest to `near` first (else most populated first).
     economies: any of these, e.g. ["Extraction", "Refinery"]; economy_scope: "system" (system economy, plus second
@@ -103,6 +104,13 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
     conflict_type (War, CivilWar, Election), min_stations, station_types (e.g. ["coriolis", "outpost"]).
     Faction filters, which must all hold for the same faction: faction_state/state_in, state_trend (raw number),
     controlling_only, faction_name, min_influence/max_influence (percent), happiness (any-of list).
+    player_faction: true keeps only player factions, false only NPC factions (applies to the same faction as the other
+    faction filters; every faction in the results carries is_player). Player status comes from EDSM and is stored when
+    `refresh-stations` / `find-systems --refresh-stations` (or a live lookup) fetches a system; a faction not yet checked
+    has is_player null and is kept, not rejected - see faction_players_unknown in the reply.
+    state_since_hours: with faction_state, keep only factions whose CURRENT run of that state began within the last N
+    hours (worked out from the stored faction history; state_started_at and state_hours_ago are returned, and
+    start_is_lower_bound true means history begins inside the run so it may be older).
     sort: "distance" (default), "population", "influence", "freshest" or "name".
     Stations come from EDSM data stored by the CLI command `refresh-stations` (incl. planetary outposts and surface
     settlements, each with its controlling faction and controlled_by_matching_faction) merged with market uploads;
@@ -111,6 +119,9 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
     Example - agricultural or industrial systems with a faction pending Expansion and no extraction/refinery anywhere:
     economies=["Agri", "Industrial"], faction_state="Expansion", state_in="pending",
     exclude_economies=["Extraction", "Refinery"].
+    Example - Industrial systems of at least 1,000,000 population whose controlling player faction started Expansion in
+    the last 48 hours: economies=["Industrial"], min_population=1000000, controlling_only=true, player_faction=true,
+    faction_state="Expansion", state_in="active", state_since_hours=48.
     Snapshot of systems the listener has seen; check factions_age_hours.
     """
     return _run(queries.find_systems, economies, economy_scope, include_second, faction_state, state_in,
@@ -121,7 +132,8 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
                 in_conflict=in_conflict, conflict_type=conflict_type, faction_name=faction_name,
                 min_influence=min_influence, max_influence=max_influence, happiness=happiness,
                 state_trend=state_trend, min_stations=min_stations, station_types=station_types, sort=sort,
-                min_faction_stations=min_faction_stations)
+                min_faction_stations=min_faction_stations, player_faction=player_faction,
+                state_since_hours=state_since_hours)
 
 
 @mcp.tool()

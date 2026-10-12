@@ -110,6 +110,8 @@ populated first); `--csv` / `--json` export them.
 | `--allegiance`, `--government`, `--security` | any-of lists, e.g. `--government Democracy,Corporate --security low,anarchy` |
 | `--conflict yes\|no`, `--conflict-type War,CivilWar,Election` | systems with / without an active conflict, and of which type |
 | `--faction NAME`, `--min-influence N`, `--max-influence N`, `--happiness A,B`, `--trend N`, `--controlling-only` | criteria on the **same** faction as `--state` (influence in percent; `--trend` is the raw number stored for pending/recovering states) |
+| `--player-faction yes\|no` | the matching faction is / is not a player faction. EDDN does not say, so this comes from EDSM (stored by `refresh-stations`, `--refresh-stations` or a `--live` lookup); factions EDSM has not been asked about are **kept** and shown as `[?]` (`[P]` = player), and the reply counts them in `faction_players_unknown` |
+| `--state-since-hours N` | with `--state`: the faction's **current run** of that state began within N hours. Worked out from the stored faction history, not stored itself; each hit shows when it began, and "or earlier" when history starts inside the run |
 | `--min-stations N`, `--station-type coriolis,outpost` | at least N stations with a stored market; a station type containing one of the names |
 | `--sort distance\|population\|influence\|freshest\|name` | ordering (default distance; most populated first without `--near`) |
 
@@ -118,6 +120,13 @@ refinery economy anywhere (system, second economy or stations):
 
 ```
 python -m eddn_helper find-systems --economy Agri,Industrial --state Expansion --state-in pending --exclude-economy Extraction,Refinery --near Sol --ly 60
+```
+
+Example - industrial systems of at least a million people whose controlling **player faction** entered an active
+Expansion in the last two days (run `--refresh-stations` once so player status is known; it fetches both from EDSM):
+
+```
+python -m eddn_helper find-systems --economy Industrial --min-pop 1000000 --controlling-only --player-faction yes --state Expansion --state-in active --state-since-hours 48 --refresh-stations
 ```
 
 Each result lists the matching factions with where the state was found and the **raw trend** of pending/recovering
@@ -295,6 +304,8 @@ python -m eddn_helper backup C:\temp\copy.sqlite
   database whose schema is behind or ahead of the code and tell you what to do.
 - A migration runs in one transaction (rolls back fully on failure) and concurrent upgraders serialise.
 - Large rebuilds lock the database for writes; stop the listener first for those.
+- `faction_info` (revision 0007) holds one row per faction name with `is_player` from EDSM. It is written only by the
+  EDSM paths, never by the listener; a faction with no row has unknown status.
 - Import data from the old pre-SQLAlchemy file (`eddn.sqlite`): `python -m eddn_helper import-legacy [--from <file>]`.
 
 ## Developing while the listener runs
