@@ -280,17 +280,7 @@ def _find_systems(args, session):
         state_since_hours=args.state_since_hours)
 
 
-def refresh_system_stations(session, name, id64=None):
-    """Fetch one system's stations from EDSM into the database. Returns (count_or_None, error_message_or_None)."""
-    from sqlalchemy.exc import DBAPIError
-    from . import external
-    try:
-        return external.refresh_stations(session, name, id64), None
-    except external.LiveLookupError as e:
-        return None, str(e)
-    except DBAPIError:
-        session.rollback()
-        return None, live.READ_ONLY_MSG
+refresh_system_stations = live.refresh_system_stations
 
 
 def cmd_refresh_stations(args, session):
@@ -304,6 +294,26 @@ def cmd_refresh_stations(args, session):
             break
     if args.json:
         print(json.dumps(out, indent=2))
+
+
+def cmd_refresh_factions(args, session):
+    from . import external
+    try:
+        res = external.refresh_player_flags(session, args.limit, args.controlling_only, args.near, args.ly, args.dry_run,
+                                            lambda line: print(line, file=sys.stderr))
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return
+
+    def human(d):
+        if args.dry_run:
+            print(f"{d['unchecked']} factions have no player status yet; at most {d['requests_needed_at_most']} EDSM "
+                  f"requests (about 1 per second) would settle them")
+            return
+        print(f"{d['requests']} requests, {d['stored']} statuses stored, {d['remaining']} factions still unchecked"
+              + (f" (stopped: {d['error']})" if d["error"] else
+                 f" - raise --limit (now {args.limit}) to continue" if d["remaining"] else ""))
+    emit(args, res, human)
 
 
 def cmd_faction_stations(args, session):
@@ -324,25 +334,10 @@ def cmd_faction_stations(args, session):
 
 def cmd_find_systems(args, session):
     res = _find_systems(args, session)
-    if args.refresh_stations and "error" not in res:
-        budget, tried = args.refresh_limit, set()
-        while budget > 0:
-            stale = args.stations_max_age_hours
-            todo = [r for r in res["results"] if r["system"] not in tried and (
-                not r["stations_known"] or (r["stations_fetched_age_hours"] or 0) > stale
-                or (args.player_faction and any(f["is_player"] is None for f in r["matching_factions"])))][:budget]
-            if not todo:
-                break
-            for r in todo:
-                tried.add(r["system"])
-                budget -= 1
-                n, err = refresh_system_stations(session, r["system"], r["id64"])
-                print(f"refreshed stations of {r['system']}: " + (f"{n} stored" if err is None and n is not None
-                                                                   else err or "not found at EDSM"), file=sys.stderr)
-                if err:
-                    budget = 0
-                    break
-            res = _find_systems(args, session)
+    if args.refresh_stations:
+        res = live.refresh_missing(session, lambda: _find_systems(args, session), args.refresh_limit,
+                                   args.stations_max_age_hours, bool(args.player_faction),
+                                   lambda line: print(line, file=sys.stderr))
     def human(d):
         if "error" in d:
             print(d["error"], file=sys.stderr)
@@ -1069,6 +1064,13 @@ def build_parser():
     sp = add("refresh-stations", cmd_refresh_stations,
              "Fetch the stations (incl. settlements and controlling faction) of systems from EDSM into the database")
     sp.add_argument("systems", nargs="+", metavar="SYSTEM")
+    sp = add("refresh-factions", cmd_refresh_factions,
+             "Fetch player-faction status from EDSM for every faction that has none yet (needs a writable database)")
+    sp.add_argument("--limit", type=int, default=50, help="max EDSM requests this run, one per system (default 50)")
+    sp.add_argument("--controlling-only", action="store_true", help="only factions that control a system")
+    sp.add_argument("--near", metavar="SYSTEM", help="only systems around this one")
+    sp.add_argument("--ly", type=float, help="radius for --near")
+    sp.add_argument("--dry-run", action="store_true", help="only count what is unchecked")
     sp = add("faction-stations", cmd_faction_stations, "Stations a faction controls (from the stored EDSM station data)")
     sp.add_argument("faction")
     sp.add_argument("--system", help="only this system")

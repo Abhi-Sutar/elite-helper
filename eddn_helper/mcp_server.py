@@ -50,6 +50,28 @@ def _run(fn, *args, **kwargs):
         return fn(session, *args, **kwargs)
 
 
+def _run_fetching(fetch, fn, *args, **kwargs):
+    """
+    Like _run, but when `fetch` is true the call runs on the writer connection (ELITE_HELPER_INGEST_DATABASE_URL) so
+    data fetched from EDSM can be stored; the normal reader connection cannot write. Without that variable the call
+    still runs, and a fetch reports that the database is read-only.
+    """
+    if not fetch:
+        return _run(fn, *args, **kwargs)
+    try:
+        _get_engine()
+    except migrate.SchemaError as e:
+        return {"error": str(e)}
+    session = live.writer_session()
+    if session is None:
+        return _run(fn, *args, **kwargs)
+    with session:
+        try:
+            return fn(session, *args, **kwargs)
+        finally:
+            session.rollback()
+
+
 @mcp.tool()
 def data_status() -> dict:
     """Row counts, newest data timestamps, and whether the EDDN listener is currently running."""
@@ -59,7 +81,7 @@ def data_status() -> dict:
 @mcp.tool()
 def system_info(system: str, live_lookup: bool = False) -> dict:
     """System details plus every faction's influence %, state, pending/recovering states and conflicts."""
-    return _run(live.system_info, system, live_lookup)
+    return _run_fetching(live_lookup, live.system_info, system, live_lookup)
 
 
 @mcp.tool()
@@ -69,7 +91,7 @@ def system_economy(system: str, live_lookup: bool = False) -> dict:
     with type and station economies. Current snapshot only; live_lookup refreshes a missing/stale system from EDSM and
     lists EDSM-only stations under stations_live.
     """
-    return _run(live.system_economy, system, live_lookup)
+    return _run_fetching(live_lookup, live.system_economy, system, live_lookup)
 
 
 @mcp.tool()
@@ -88,7 +110,8 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
                  happiness: list[str] | None = None, state_trend: int | None = None, min_stations: int = 0,
                  station_types: list[str] | None = None, sort: str = "distance",
                  min_faction_stations: int = 0, player_faction: bool | None = None,
-                 state_since_hours: float | None = None) -> dict:
+                 state_since_hours: float | None = None, refresh_missing: bool = False,
+                 refresh_limit: int = 10) -> dict:
     """
     Find systems matching ALL given criteria, nearest to `near` first (else most populated first).
     economies: any of these, e.g. ["Extraction", "Refinery"]; economy_scope: "system" (system economy, plus second
@@ -111,6 +134,12 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
     state_since_hours: with faction_state, keep only factions whose CURRENT run of that state began within the last N
     hours (worked out from the stored faction history; state_started_at and state_hours_ago are returned, and
     start_is_lower_bound true means history begins inside the run so it may be older).
+    refresh_missing: fetch from EDSM what the result systems lack - stations never fetched or older than a week, and
+    (with player_faction) factions with unknown player status - store it, and search again. At most refresh_limit
+    systems per call (default 10, about 2 seconds each because EDSM allows 1 request per second); the reply lists
+    `refreshed` systems and `refresh_pending`, how many result systems still lack data - call again to continue.
+    Needs the server's ELITE_HELPER_INGEST_DATABASE_URL (a writer connection); otherwise `refreshed` shows the
+    read-only error.
     sort: "distance" (default), "population", "influence", "freshest" or "name".
     Stations come from EDSM data stored by the CLI command `refresh-stations` (incl. planetary outposts and surface
     settlements, each with its controlling faction and controlled_by_matching_faction) merged with market uploads;
@@ -124,16 +153,22 @@ def find_systems(economies: list[str] | None = None, economy_scope: str = "syste
     faction_state="Expansion", state_in="active", state_since_hours=48.
     Snapshot of systems the listener has seen; check factions_age_hours.
     """
-    return _run(queries.find_systems, economies, economy_scope, include_second, faction_state, state_in,
-                controlling_only, near, ly, min_population, demand_commodities, include_carrier_markets,
-                max_age_hours, limit, exclude_economies=exclude_economies, exclude_scope=exclude_scope,
-                exclude_states=exclude_states, exclude_states_in=exclude_states_in, exclude_systems=exclude_systems,
-                max_population=max_population, allegiance=allegiance, government=government, security=security,
-                in_conflict=in_conflict, conflict_type=conflict_type, faction_name=faction_name,
-                min_influence=min_influence, max_influence=max_influence, happiness=happiness,
-                state_trend=state_trend, min_stations=min_stations, station_types=station_types, sort=sort,
-                min_faction_stations=min_faction_stations, player_faction=player_faction,
-                state_since_hours=state_since_hours)
+    def search(session):
+        return queries.find_systems(
+            session, economies, economy_scope, include_second, faction_state, state_in, controlling_only, near, ly,
+            min_population, demand_commodities, include_carrier_markets, max_age_hours, limit,
+            exclude_economies=exclude_economies, exclude_scope=exclude_scope, exclude_states=exclude_states,
+            exclude_states_in=exclude_states_in, exclude_systems=exclude_systems, max_population=max_population,
+            allegiance=allegiance, government=government, security=security, in_conflict=in_conflict,
+            conflict_type=conflict_type, faction_name=faction_name, min_influence=min_influence,
+            max_influence=max_influence, happiness=happiness, state_trend=state_trend, min_stations=min_stations,
+            station_types=station_types, sort=sort, min_faction_stations=min_faction_stations,
+            player_faction=player_faction, state_since_hours=state_since_hours)
+
+    if not refresh_missing:
+        return _run(search)
+    return _run_fetching(True, lambda session: live.refresh_missing(
+        session, lambda: search(session), max(0, min(refresh_limit, 30)), 168, player_faction is not None))
 
 
 @mcp.tool()
