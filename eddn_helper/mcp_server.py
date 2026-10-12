@@ -8,6 +8,9 @@ from . import database, live, migrate, queries
 from .journal import context as journal_context
 from .journal import files as jfiles
 from .journal import income as journal_income
+from .journal import ingest as journal_ingest
+from .journal import queries as journal_queries
+from .journal import views as journal_views
 
 mcp = MCPServer(
     "elite-helper",
@@ -20,7 +23,11 @@ mcp = MCPServer(
         "the station pays the commander. "
         "Two tools read the commander's own local journal files instead of the database: where_am_i (current "
         "system/station/ship - the answer to 'where am I' or 'what is near me') and credit_rate (credits/hour "
-        "and income by stream). Use where_am_i first when a question depends on the player's location."))
+        "and income by stream). Use where_am_i first when a question depends on the player's location. The "
+        "rest of the journal tools (journal_search, travel_log, visited_*, ledger, cargo, materials, ships, missions, "
+        "reputation, commander_stats, carrier_status, play_sessions) read the commander's history from the database, "
+        "ingesting new journal lines on demand; every reply has journal_freshness - if db_behind_journal is true the "
+        "answer may be missing the latest play (see journal_sync_status)."))
 
 
 _engine = None
@@ -253,24 +260,160 @@ def where_am_i(enrich: bool = False, live_lookup: bool = False) -> dict:
 
 @mcp.tool()
 def credit_rate(since_hours: float | None = None, session_only: bool = False, max_gap_minutes: float | None = None,
-                streams: list[str] | None = None, include_crew: bool = False) -> dict:
+                streams: list[str] | None = None, include_crew: bool = False, source: str = "auto") -> dict:
     """
-    Credits per hour from the local journals, using active playtime stitched across sessions (time between
-    sessions never counts; max_gap_minutes also drops AFK gaps inside a session). Streams: trading, bounty, mission,
-    exploration, carrier, carrier_market, maintenance, rebuy, crew_wages - each with earned/spent/net, plus a
-    per-commodity trading table, maintenance breakdown and per-session rows. since_hours limits to the last N
-    hours; session_only uses just the newest journal. Caveats: carrier_market is an approximation from carrier
-    balance snapshots (it also absorbs upkeep); mission commodity rewards are not priced. All history by default,
-    which can be slow - pass since_hours for a recent window.
+    Credits per hour from your journals, using active playtime stitched across sessions (time between sessions never
+    counts; max_gap_minutes also drops AFK gaps inside a session). Streams: trading, bounty, mission, exploration,
+    carrier, carrier_market, maintenance, rebuy, crew_wages - each with earned/spent/net, plus a per-commodity trading
+    table, maintenance breakdown and per-session rows. since_hours limits to the last N hours; session_only uses just
+    the newest journal. Caveats: carrier_market is an approximation from carrier balance snapshots (it also absorbs
+    upkeep); mission commodity rewards are not priced.
+    source: "auto" (default) answers from the ingested journal database (new journal lines are ingested first) and
+    falls back to reading the files if the database is unavailable or cannot be brought up to date; "db" or "files"
+    force one. The reply says which was used.
     """
+    since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)) if since_hours else None
+    if source not in ("auto", "db", "files"):
+        return {"error": "source must be 'auto', 'db' or 'files'"}
+    reason = None
+    if source in ("auto", "db"):
+        try:
+            res = _run(journal_queries.credit_rate, since=since, session_only=session_only,
+                       max_gap_minutes=max_gap_minutes, streams=streams, crew_wages=include_crew)
+        except Exception as e:      # database unreachable: the files still work
+            res = {"error": f"{type(e).__name__}: {e}"}
+        fresh = res.get("journal_freshness") or {}
+        if source == "db" or ("error" not in res and not fresh.get("db_behind_journal")):
+            return res
+        reason = res.get("error") or fresh.get("ingest_error") or "database is behind the journal files"
     try:
         paths = jfiles.require_journal_files(jfiles.journal_dir())
     except jfiles.JournalNotFound as e:
         return {"error": str(e)}
     if session_only:
         paths = paths[-1:]
-    since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)) if since_hours else None
-    return journal_income.credit_rate(paths, streams, since, max_gap_minutes, include_crew)
+    result = journal_income.credit_rate(paths, streams, since, max_gap_minutes, include_crew)
+    result["source"] = "files"
+    if reason:
+        result["fallback_reason"] = reason
+    return result
+
+
+def _journal(fn, **kwargs):
+    """Run a database-backed journal query; they ingest new journal lines first and report journal_freshness."""
+    return _run(fn, **kwargs)
+
+
+@mcp.tool()
+def journal_search(event: str | None = None, system: str | None = None, station: str | None = None,
+                   text: str | None = None, days: int | None = None, since: str | None = None, until: str | None = None,
+                   commander: str | None = None, limit: int = 50, include_data: bool = False,
+                   oldest_first: bool = False) -> dict:
+    """
+    Search your whole event history (everything the game ever wrote to the journal, ingested into the database).
+    event: one name or comma list (Docked, FSDJump, MarketSell, Scan, ...); system / station: exact name; text:
+    case-insensitive text anywhere in the event; days or since/until (UTC, YYYY-MM-DD[THH:MM:SS]). Newest first.
+    include_data adds the raw event JSON (large). New journal lines are ingested before answering; check
+    journal_freshness.db_behind_journal in the reply.
+    """
+    return _journal(journal_queries.journal_events, event=event, system=system, station=station, text=text, days=days,
+                    since=since, until=until, commander=commander, limit=limit, include_data=include_data,
+                    oldest_first=oldest_first)
+
+
+@mcp.tool()
+def travel_log(days: int = 30, since: str | None = None, until: str | None = None, commander: str | None = None,
+               limit: int = 50) -> dict:
+    """FSD and carrier jumps, newest first: system, jump distance, fuel, minutes stayed; plus total jumps / light years / distinct systems in the window."""
+    return _journal(journal_queries.travel_log, days=days, since=since, until=until, commander=commander, limit=limit)
+
+
+@mcp.tool()
+def visited_systems(days: int | None = None, since: str | None = None, system: str | None = None,
+                    commander: str | None = None, limit: int = 30) -> dict:
+    """Systems you have jumped to, most recent first, with visit counts and first/last visit (give system to check one)."""
+    return _journal(journal_queries.visited_systems, days=days, since=since, system=system, commander=commander, limit=limit)
+
+
+@mcp.tool()
+def visited_stations(days: int | None = None, since: str | None = None, system: str | None = None,
+                     commander: str | None = None, limit: int = 30) -> dict:
+    """Stations, outposts and carriers you have docked at, most recent first, with docking counts."""
+    return _journal(journal_queries.visited_stations, days=days, since=since, system=system, commander=commander,
+                    limit=limit)
+
+
+@mcp.tool()
+def play_sessions(days: int | None = None, since: str | None = None, commander: str | None = None, limit: int = 20) -> dict:
+    """Play sessions (one per journal file), newest first: start, end, hours, event count, whether the game closed cleanly."""
+    return _journal(journal_queries.sessions, days=days, since=since, commander=commander, limit=limit)
+
+
+@mcp.tool()
+def ledger(days: int = 7, since: str | None = None, until: str | None = None, category: str | None = None,
+           commander: str | None = None, limit: int = 50) -> dict:
+    """
+    Every credit movement the journal records (trades, bounties, missions, exploration, repairs, crew wages, ships,
+    modules, fines, community goals...), newest first, with per-category earned/spent/net and a running total.
+    category: comma list to filter. The total is the sum over the window, not your balance - carrier market sales
+    are not journal events.
+    """
+    return _journal(journal_queries.ledger, days=days, since=since, until=until, category=category, commander=commander,
+                    limit=limit)
+
+
+@mcp.tool()
+def cargo(commander: str | None = None) -> dict:
+    """What the ship is carrying now: the last Cargo snapshot moved forward through later trades, ejections, mining and transfers."""
+    return _journal(journal_views.cargo, commander=commander)
+
+
+@mcp.tool()
+def materials(category: str | None = None, commander: str | None = None) -> dict:
+    """Raw / manufactured / encoded materials with counts (last Materials snapshot plus collection, discards, trades, crafting). category: raw, manufactured or encoded."""
+    return _journal(journal_views.materials, commander=commander, category=category)
+
+
+@mcp.tool()
+def ships(modules: bool = True, commander: str | None = None) -> dict:
+    """The ship you are in (last Loadout: value, rebuy, cargo, jump range, modules with engineering) and the stored fleet with locations."""
+    return _journal(journal_views.ships, commander=commander, modules=modules)
+
+
+@mcp.tool()
+def missions(recent_days: int = 14, commander: str | None = None) -> dict:
+    """Active missions (faction, reward, expiry, destination), ones past expiry without a result, and those finished in the last recent_days."""
+    return _journal(journal_views.missions, commander=commander, recent_days=recent_days)
+
+
+@mcp.tool()
+def reputation(commander: str | None = None) -> dict:
+    """Ranks (Combat, Trade, Explore, CQC, Soldier, Exobiologist, Federation, Empire) with progress to the next, and superpower reputation."""
+    return _journal(journal_views.reputation, commander=commander)
+
+
+@mcp.tool()
+def commander_stats(section: str | None = None, commander: str | None = None) -> dict:
+    """The game's Statistics snapshot (Bank_Account, Combat, Trading, Exploration, Mining, Crafting, ...). section selects one block; omit for all."""
+    return _journal(journal_views.commander_stats, commander=commander, section=section)
+
+
+@mcp.tool()
+def carrier_status(commander: str | None = None) -> dict:
+    """Your fleet carrier as last reported by the game: fuel, jump range, balance, space usage, crew/services (open carrier management in game to refresh)."""
+    return _journal(journal_views.carrier, commander=commander)
+
+
+@mcp.tool()
+def journal_sync_status() -> dict:
+    """
+    Is the database up to date with the local journal files? state: current | behind (can be ingested now) |
+    no_writer (behind and the database connection cannot write - set ELITE_HELPER_INGEST_DATABASE_URL or run
+    `journal-sync`) | no_journals. Also files/events counts, the newest event stored vs the newest journal write, last
+    ingest time and error, and whether the optional ingester service / scheduled task is running. Journal tools ingest
+    on demand, so this is only for diagnosing.
+    """
+    return _run(journal_ingest.journal_status, None)
 
 
 def main():
