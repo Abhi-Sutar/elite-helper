@@ -457,6 +457,8 @@ class StationCase(unittest.TestCase):
         calls = []
 
         def fake(path, **p):
+            if path.endswith("/factions"):   # the player-status lookup that accompanies each station refresh
+                return {}
             calls.append(p["systemName"])
             return payloads[p["systemName"]]
 

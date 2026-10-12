@@ -97,6 +97,17 @@ class Faction(Base):
     )
 
 
+class FactionInfo(Base):
+    """Per-faction facts EDDN does not carry (currently whether it is a player faction, from EDSM). No row = unknown."""
+    __tablename__ = "faction_info"
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    is_player: Mapped[bool] = mapped_column(Boolean)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    source: Mapped[str] = mapped_column(String(16), default="edsm", server_default="edsm")
+
+    __table_args__ = (Index("ix_faction_info_name_lower", func.lower(name), unique=True),)
+
+
 class FactionHistory(Base):
     """
     Time series of one faction in one system: one row per observation in full mode (only meaningful changes in

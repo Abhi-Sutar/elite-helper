@@ -10,8 +10,8 @@ import bisect
 from sqlalchemy import case, func, select
 
 from . import config, database, lock, store
-from .models import (Commodity, CommodityPrice, Faction, FactionHistory, JournalEvent, JournalFile, Market, MarketUpdate,
-                     PriceHistory, Station, StationSync, System, SystemUpdate)
+from .models import (Commodity, CommodityPrice, Faction, FactionHistory, FactionInfo, JournalEvent, JournalFile, Market,
+                     MarketUpdate, PriceHistory, Station, StationSync, System, SystemUpdate)
 
 
 def iso(dt):
@@ -56,11 +56,23 @@ def _state_items(items):
     return out
 
 
-def _faction_dict(f):
+def _player_flags(session, names):
+    """{lower(name): bool} for the factions whose player status is known (from EDSM); others are left out."""
+    names = sorted({n.lower() for n in names})
+    out = {}
+    for i in range(0, len(names), 500):
+        for name, is_player in session.execute(select(FactionInfo.name, FactionInfo.is_player).where(
+                func.lower(FactionInfo.name).in_(names[i:i + 500]))):
+            out[name.lower()] = bool(is_player)
+    return out
+
+
+def _faction_dict(f, players=None):
     active, pending, recovering = (_state_items(f.active_states), _state_items(f.pending_states),
                                    _state_items(f.recovering_states))
     return {
-        "name": f.name, "influence_pct": _pct(f.influence), "state": f.state, "government": f.government,
+        "name": f.name, "is_player": (players or {}).get(f.name.lower()),
+        "influence_pct": _pct(f.influence), "state": f.state, "government": f.government,
         "allegiance": f.allegiance, "happiness": f.happiness,
         "active_states": [s["state"] for s in active],
         "pending_states": [s["state"] for s in pending],
@@ -76,6 +88,7 @@ def system_info(session, name):
         return {"found": False, "system": name}
     facs = session.execute(select(Faction).where(Faction.system_id64 == s.id64)
                            .order_by(Faction.influence.desc())).scalars().all()
+    players = _player_flags(session, [f.name for f in facs])
     return {
         "found": True, "system": s.name, "id64": s.id64,
         "coords": {"x": s.x, "y": s.y, "z": s.z},
@@ -84,7 +97,7 @@ def system_info(session, name):
         "controlling_faction": s.controlling_faction, "conflicts": s.conflicts or [],
         "info_updated_at": iso(s.updated_at), "factions_updated_at": iso(s.factions_updated_at),
         "factions_age_hours": age_hours(s.factions_updated_at), "source": s.source,
-        "factions": [_faction_dict(f) for f in facs],
+        "factions": [_faction_dict(f, players) for f in facs],
     }
 
 
@@ -243,8 +256,10 @@ def faction_presence(session, name):
                 .where(FactionHistory.faction.in_(names), FactionHistory.present.is_(True))
                 .group_by(FactionHistory.system_id64, FactionHistory.faction)):
             stats[(sid, fac)] = (n, first)
+    players = _player_flags(session, {r.Faction.name for r in rows})
     return {"faction": name, "found": bool(rows), "systems": [
-        {"system": r.system_name, "faction": r.Faction.name, "influence_pct": _pct(r.Faction.influence),
+        {"system": r.system_name, "faction": r.Faction.name, "is_player": players.get(r.Faction.name.lower()),
+         "influence_pct": _pct(r.Faction.influence),
          "state": r.Faction.state, "is_controlling": bool(r.Faction.is_controlling),
          "age_hours": age_hours(r.fac_ts),
          "history_rows": stats.get((r.Faction.system_id64, r.Faction.name), (0, None))[0],
@@ -968,6 +983,34 @@ def _faction_state_hits(f, state_key, state_in):
     return hits
 
 
+def _state_run_start(session, system_id64, faction, state_key, state_in, cutoff):
+    """
+    When the faction's CURRENT run of `state_key` began, if that was at or after `cutoff`: (start, is_lower_bound),
+    else None. Read from faction_history: the run is the unbroken stretch of rows that have the state, ended by a row
+    without it or by the faction leaving. Rows are written on change (plus a daily anchor), so the first row of the run
+    is when it began. is_lower_bound means history starts inside the run, so it may be older than the first row.
+    """
+    q = select(FactionHistory).where(FactionHistory.system_id64 == system_id64, FactionHistory.faction == faction)
+    rows = session.execute(q.where(FactionHistory.ts >= cutoff).order_by(FactionHistory.ts)).scalars().all()
+    if not rows:
+        return None                      # nothing logged since the cutoff, so nothing changed since then
+
+    def has(r):
+        return bool(r.present and _faction_state_hits(r, state_key, state_in))
+    if not has(rows[-1]):
+        return None
+    start = None
+    for r in rows:
+        start = (start or r.ts) if has(r) else None
+    if start != rows[0].ts:
+        return start, False
+    before = session.execute(q.where(FactionHistory.ts < cutoff).order_by(FactionHistory.ts.desc()).limit(1)
+                             ).scalars().first()
+    if before is None:
+        return start, True
+    return None if has(before) else (start, False)
+
+
 SORTS = ("distance", "population", "influence", "freshest", "name")
 
 
@@ -982,7 +1025,7 @@ def find_systems(session, economies=None, economy_scope="system", include_second
                  exclude_systems=None, max_population=None, allegiance=None, government=None, security=None,
                  in_conflict=None, conflict_type=None, faction_name=None, min_influence=None, max_influence=None,
                  happiness=None, state_trend=None, min_stations=0, station_types=None, sort="distance",
-                 min_faction_stations=0):
+                 min_faction_stations=0, player_faction=None, state_since_hours=None):
     """
     Systems matching ALL given criteria. Names are case/space-insensitive, lists may be comma separated strings.
 
@@ -996,7 +1039,10 @@ def find_systems(session, economies=None, economy_scope="system", include_second
         (True/False) and conflict_type (War, CivilWar, Election).
     Faction criteria (all must hold for the SAME faction): faction_state (state_in as above; state_trend = raw trend
         number of a pending/recovering state), controlling_only, faction_name, min_influence / max_influence (percent),
-        happiness (any of).
+        happiness (any of), player_faction (True: player factions only, False: NPC factions only; player status comes
+        from EDSM, so a faction EDSM has not been asked about is kept and flagged is_player null, not rejected),
+        state_since_hours (with faction_state: the faction's current run of that state began within this many hours,
+        worked out from faction_history; state_started_at / state_hours_ago are returned).
     Stations (EDSM stations stored by `refresh-stations`, merged with stations known from market uploads; planetary
         outposts and surface settlements count like any other station):  min_stations, station_types (a type name or
         category: 'coriolis', 'outpost', 'settlement', 'surface' ...), min_faction_stations (the matching faction
@@ -1018,6 +1064,8 @@ def find_systems(session, economies=None, economy_scope="system", include_second
         return {"error": f"sort must be one of {', '.join(SORTS)}"}
     if state_trend is not None and not faction_state:
         return {"error": "state_trend needs faction_state"}
+    if state_since_hours is not None and (not faction_state or state_since_hours <= 0):
+        return {"error": "state_since_hours needs faction_state and a positive number of hours"}
     origin, err = _resolve_origin(session, near)
     if err:
         return err
@@ -1030,7 +1078,8 @@ def find_systems(session, economies=None, economy_scope="system", include_second
     commodities = [norm_commodity(c) for c in _as_list(demand_commodities)]
     wanted_name = faction_name.strip().lower() if faction_name else None
     faction_filter = bool(state_key or controlling_only or wanted_name or happiness_keys
-                          or min_influence is not None or max_influence is not None)
+                          or min_influence is not None or max_influence is not None or player_faction is not None)
+    players_unknown = 0
 
     station_info = _system_stations(session, None, include_carriers=include_carrier_markets)
     station_hits = {}
@@ -1123,7 +1172,30 @@ def find_systems(session, economies=None, economy_scope="system", include_second
                     {"faction": f.name, "influence_pct": pct, "state": f.state, "happiness": f.happiness,
                      "found_in": hits, "is_controlling": bool(f.is_controlling)})
                 influence_of[f.system_id64] = max(influence_of.get(f.system_id64, 0), pct or 0)
-        candidates = [c for c in candidates if c[0].id64 not in excluded_ids
+        if faction_hits:
+            flags = _player_flags(session, [h["faction"] for hs in faction_hits.values() for h in hs])
+            for hs in faction_hits.values():
+                for h in hs:
+                    h["is_player"] = flags.get(h["faction"].lower())
+            if player_faction is not None:     # unknown (None) is kept and flagged, like unknown stations
+                faction_hits = {sid: [h for h in hs if h["is_player"] in (None, bool(player_faction))]
+                                for sid, hs in faction_hits.items()}
+                players_unknown = len({h["faction"].lower() for hs in faction_hits.values() for h in hs
+                                       if h["is_player"] is None})
+            if state_since_hours is not None:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=state_since_hours)
+                for sid, hs in faction_hits.items():
+                    kept = []
+                    for h in hs:
+                        run = _state_run_start(session, sid, h["faction"], state_key, state_in, cutoff)
+                        if run:
+                            h.update(state_started_at=iso(run[0]), state_hours_ago=age_hours(run[0]),
+                                     start_is_lower_bound=run[1])
+                            kept.append(h)
+                    faction_hits[sid] = kept
+            faction_hits = {sid: hs for sid, hs in faction_hits.items() if hs}
+            influence_of = {sid: max(h["influence_pct"] or 0 for h in hs) for sid, hs in faction_hits.items()}
+        candidates =[c for c in candidates if c[0].id64 not in excluded_ids
                       and (not faction_filter or c[0].id64 in faction_hits)]
     if min_faction_stations:
         def enough(c):
@@ -1201,11 +1273,19 @@ def find_systems(session, economies=None, economy_scope="system", include_second
                          "government": sorted(government_keys), "security": sorted(security_keys),
                          "in_conflict": in_conflict, "conflict_type": sorted(conflict_keys),
                          "min_stations": min_stations, "station_types": sorted(type_keys),
-                         "min_faction_stations": min_faction_stations,
+                         "min_faction_stations": min_faction_stations, "player_faction": player_faction,
+                         "state_since_hours": state_since_hours,
                          "demand_commodities": commodities, "ly": ly, "max_age_hours": max_age_hours, "sort": sort},
             "origin": near, "count": len(candidates), "shown": len(results), "results": results,
             "stations_unknown": len(unknown), "unknown_systems": unknown[:20],
+            "faction_players_unknown": players_unknown,
             "note": "snapshot of systems seen by the listener or a live lookup; check the age fields"
+                    + ("; %d matching faction(s) have no player status yet (is_player null; they were kept) - "
+                       "`refresh-stations <system>` or `find-systems --refresh-stations` fetches it from EDSM"
+                       % players_unknown if players_unknown else "")
+                    + ("; state_started_at comes from faction_history, which is written when a faction's data changes"
+                       " (plus a daily anchor); start_is_lower_bound true means history begins inside the run"
+                       if state_since_hours is not None else "")
                     + ("; %d of %d systems have no EDSM station data (stations_known false) - station filters did not "
                        "apply to them, run `refresh-stations` or `find-systems --refresh-stations`"
                        % (len(unknown), len(candidates)) if unknown else "")}
