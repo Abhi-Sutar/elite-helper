@@ -72,6 +72,36 @@ def read_events(path):
     return out
 
 
+def read_numbered(path):
+    """
+    (size_bytes, rows, final_line) for incremental ingest. rows are (line_no, datetime, event_dict) for every
+    parseable line, with line_no the 1-based physical line. final_line is the last line known to be final: a
+    newline-terminated line, or a last line that already parses; a half-written last line is not final, so it is
+    re-read (under the same number) once the game finishes writing it.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    rows, final = [], 0
+    for n, raw in enumerate(lines, start=1):
+        terminated = n < len(lines)
+        text = raw.strip()
+        parsed = None
+        if text:
+            try:
+                e = json.loads(text)
+                ts = e.get("timestamp") if isinstance(e, dict) else None
+                if ts:
+                    parsed = (n, parse_timestamp(ts), e)
+            except (ValueError, TypeError):
+                parsed = None
+        if parsed:
+            rows.append(parsed)
+        if terminated or parsed:
+            final = n
+    return len(data), rows, final
+
+
 def read_json_file(directory, name):
     """A companion file such as Status.json: (parsed dict, modified-time datetime) or (None, None) if unreadable."""
     path = Path(directory) / name

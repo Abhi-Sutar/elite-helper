@@ -4,6 +4,7 @@ and expense stream. Logic moved from the original ed_credit_rate.py; see that sc
 reasoning behind playtime stitching and the carrier_market approximation.
 """
 
+import os
 from datetime import datetime, timezone
 
 from . import files as jfiles
@@ -207,8 +208,15 @@ def parse_since(since):
 
 
 def credit_rate(paths, streams=None, since=None, max_gap_minutes=None, crew_wages=False):
+    """Credits/hour over the given journal files (oldest first); see credit_rate_sessions for the result."""
+    return credit_rate_sessions(((os.path.basename(p), jfiles.read_events(p)) for p in paths),
+                                streams, since, max_gap_minutes, crew_wages)
+
+
+def credit_rate_sessions(sessions, streams=None, since=None, max_gap_minutes=None, crew_wages=False):
     """
-    Credits/hour over the given journal files (oldest first). Returns a JSON-serialisable dict:
+    Credits/hour over sessions: an iterable of (label, [(datetime, event_dict), ...]) oldest first - one per journal
+    file, from disk or from the database. Returns a JSON-serialisable dict:
     sessions, playtime_hours, streams{earned, spent, net, count}, maintenance, per_commodity, totals,
     credits_per_hour and per-session rows. {"error": ...} for bad arguments, and a "note" instead of a rate when
     there is nothing usable (fewer than 2 timestamped events per file, or zero playtime).
@@ -228,8 +236,7 @@ def credit_rate(paths, streams=None, since=None, max_gap_minutes=None, crew_wage
     # file loop below, in chronological order.
     carrier_state = {}
 
-    for path in paths:
-        events = jfiles.read_events(path)
+    for label, events in sessions:
         if since_dt:
             events = [(t, e) for (t, e) in events if t >= since_dt]
         if len(events) < 2:
@@ -255,7 +262,7 @@ def credit_rate(paths, streams=None, since=None, max_gap_minutes=None, crew_wage
                 gc[k] += d[k]
         earned = sum(income[s]["earned"] for s in ALL_STREAMS)
         spent = sum(income[s]["spent"] for s in ALL_STREAMS)
-        session_rows.append({"file": str(path).replace("\\", "/").rsplit("/", 1)[-1], "start": jfiles.iso(t_first),
+        session_rows.append({"file": label, "start": jfiles.iso(t_first),
                              "end": jfiles.iso(t_last), "playtime_hours": round(seconds / 3600, 3),
                              "earned": earned, "spent": spent, "net": earned - spent})
 
@@ -280,6 +287,72 @@ def credit_rate(paths, streams=None, since=None, max_gap_minutes=None, crew_wage
     if hours <= 0:
         out["note"] = "Playtime computed as zero, cannot compute a rate."
     out["sessions"] = session_rows
+    return out
+
+
+def _exploration_total(e):
+    total = e.get("TotalEarningsBonus")
+    if total is None:
+        total = e.get("TotalEarnings")
+    if total is None:
+        total = sum(d.get("BaseValue", 0) + d.get("Bonus", 0) for d in e.get("Discovered", []))
+    return total or 0
+
+
+def ledger_entries(events):
+    """
+    Credit movements from (datetime, event) pairs, oldest first: dicts {ts, event, category, amount, detail} with a
+    signed amount (negative = spent). Categories follow the credit-rate streams plus ships, modules, fines, vouchers,
+    donations, community_goal and data. Carrier market revenue is not an event, so it does not appear here.
+    """
+    out = []
+
+    def add(dt, ev, category, amount, detail=None):
+        if amount:
+            out.append({"ts": jfiles.iso(dt), "event": ev, "category": category, "amount": amount, "detail": detail})
+
+    for dt, e in events:
+        ev = e.get("event")
+        if ev in MAINTENANCE_EVENTS:
+            kind, field = MAINTENANCE_EVENTS[ev]
+            add(dt, ev, "maintenance", -(e.get(field) or 0), kind)
+        elif ev == "MarketBuy":
+            add(dt, ev, "trading", -e.get("TotalCost", 0), f"{e.get('Count', 0)} x {e.get('Type_Localised', e.get('Type'))}")
+        elif ev == "MarketSell":
+            add(dt, ev, "trading", e.get("TotalSale", 0), f"{e.get('Count', 0)} x {e.get('Type_Localised', e.get('Type'))}")
+        elif ev == "RedeemVoucher":
+            add(dt, ev, "bounty" if e.get("Type") in ("bounty", "CombatBond") else "voucher", e.get("Amount", 0), e.get("Type"))
+        elif ev == "MissionCompleted":
+            add(dt, ev, "mission", e.get("Reward", 0), e.get("LocalisedName"))
+            add(dt, ev, "donation", -(e.get("Donated") or 0), e.get("LocalisedName"))
+        elif ev in ("SellExplorationData", "MultiSellExplorationData"):
+            add(dt, ev, "exploration", _exploration_total(e))
+        elif ev == "Resurrected":
+            add(dt, ev, "rebuy", -(e.get("Cost") or 0), e.get("Option"))
+        elif ev == "NpcCrewPaidWage":
+            add(dt, ev, "crew_wages", -(e.get("Amount") or 0), e.get("NpcCrewName"))
+        elif ev == "CarrierBuy":
+            add(dt, ev, "carrier", -e.get("Price", e.get("Cost", 0)), e.get("Callsign"))
+        elif ev == "CarrierDecommission":
+            add(dt, ev, "carrier", e.get("Refund", e.get("ScrapRefund", 0)))
+        elif ev == "CarrierBankTransfer":
+            add(dt, ev, "carrier", e.get("Withdraw", 0) - e.get("Deposit", 0), "carrier bank")
+        elif ev == "ShipyardBuy":
+            add(dt, ev, "ship", -e.get("ShipPrice", 0), e.get("ShipType_Localised", e.get("ShipType")))
+        elif ev == "ShipyardSell":
+            add(dt, ev, "ship", e.get("ShipPrice", 0), e.get("ShipType_Localised", e.get("ShipType")))
+        elif ev == "ShipyardTransfer":
+            add(dt, ev, "ship", -e.get("TransferPrice", 0), e.get("ShipType_Localised", e.get("ShipType")))
+        elif ev == "ModuleBuy":
+            add(dt, ev, "module", -e.get("BuyPrice", 0) + (e.get("SellPrice") or 0), e.get("BuyItem_Localised", e.get("BuyItem")))
+        elif ev in ("ModuleSell", "ModuleSellRemote"):
+            add(dt, ev, "module", e.get("SellPrice", 0), e.get("SellItem_Localised", e.get("SellItem")))
+        elif ev in ("PayFines", "PayBounties"):
+            add(dt, ev, "fines", -e.get("Amount", 0), e.get("Faction"))
+        elif ev == "CommunityGoalReward":
+            add(dt, ev, "community_goal", e.get("Reward", 0), e.get("Name"))
+        elif ev in ("BuyExplorationData", "BuyTradeData"):
+            add(dt, ev, "data", -e.get("Cost", 0), e.get("System"))
     return out
 
 

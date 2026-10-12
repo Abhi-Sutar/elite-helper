@@ -5,6 +5,7 @@ from pathlib import Path
 
 ENV_URL = "ELITE_HELPER_DATABASE_URL"
 ENV_TZ = "ELITE_HELPER_DISPLAY_TZ"
+ENV_INGEST_URL = "ELITE_HELPER_INGEST_DATABASE_URL"
 
 
 def data_dir():
@@ -68,3 +69,14 @@ def display_tz():
         return "local"
     from zoneinfo import ZoneInfo
     return ZoneInfo(name)
+
+
+def ingest_database_url():
+    """Writer URL used to ingest journals on demand when the normal URL is read-only (e.g. the MCP's reader role)."""
+    return os.environ.get(ENV_INGEST_URL) or None
+
+
+def named_lock_path(url, name):
+    """Sibling of the listener lock for another single-instance job (journal-ingest, journal-ingester)."""
+    p = lock_path(url)
+    return p.with_name(p.name.replace("listener", name, 1))

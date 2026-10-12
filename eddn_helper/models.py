@@ -242,6 +242,57 @@ class StationSync(Base):
     source: Mapped[str] = mapped_column(String(16), default="edsm", server_default="edsm")
 
 
+class JournalCommander(Base):
+    """A commander seen in the local journal files (FID is the stable id; the name can change)."""
+    __tablename__ = "journal_commander"
+    fid: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(80))
+    first_seen: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_seen: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class JournalFile(Base):
+    """
+    One Journal.*.log file and how far it has been ingested: `size_bytes` is what was read, `lines_read` the last
+    physical line known to be final (a half-written last line is not counted until it completes).
+    """
+    __tablename__ = "journal_file"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    fid: Mapped[str | None] = mapped_column(String(40))
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    lines_read: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    first_ts: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_ts: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    complete: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    ingested_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class JournalEvent(Base):
+    """
+    One journal line, raw JSON kept in `data` so views can be rebuilt by replaying. The system/body/station columns
+    are the commander's location *after* the event (stamped during ingest), which makes per-system queries cheap.
+    """
+    __tablename__ = "journal_event"
+    file_id: Mapped[int] = mapped_column(ForeignKey("journal_file.id", ondelete="CASCADE"), primary_key=True)
+    line_no: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fid: Mapped[str | None] = mapped_column(String(40))
+    ts: Mapped[datetime] = mapped_column(UTCDateTime)
+    event: Mapped[str] = mapped_column(String(60))
+    system_id64: Mapped[int | None] = mapped_column(BigId)
+    system_name: Mapped[str | None] = mapped_column(String(120))
+    body: Mapped[str | None] = mapped_column(String(120))
+    station: Mapped[str | None] = mapped_column(String(120))
+    market_id: Mapped[int | None] = mapped_column(BigId)
+    data: Mapped[dict | None] = mapped_column(JsonType)
+
+    __table_args__ = (
+        Index("ix_journal_event_fid_ts", "fid", "ts"),
+        Index("ix_journal_event_fid_event_ts", "fid", "event", "ts"),
+        Index("ix_journal_event_system_id64_ts", "system_id64", "ts"),
+    )
+
+
 class Meta(Base):
     __tablename__ = "meta"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)

@@ -642,6 +642,18 @@ def cmd_where(args, _):
 
 def cmd_credit_rate(args, _):
     from .journal import files as jfiles, income
+    if args.from_db:
+        from .journal import queries as jq
+        engine = database.make_engine(args.db)
+        try:
+            migrate.ensure_current(engine)
+            with database.session_scope(database.make_session_factory(engine)) as session:
+                data = jq.credit_rate(session, directory=args.journal_dir, since=args.since, session_only=args.session,
+                                      max_gap_minutes=args.max_gap_minutes, streams=args.streams, crew_wages=args.crew_wages)
+        finally:
+            engine.dispose()
+        emit(args, data, lambda d: print("\n".join(income.format_report(d))))
+        return 1 if "error" in data else 0
     try:
         if args.file:
             paths = args.file
@@ -657,6 +669,244 @@ def cmd_credit_rate(args, _):
     return 1 if "error" in data else 0
 
 
+def cmd_journal_sync(args, _):
+    from .journal import ingest
+    if args.watch:
+        def log(msg):
+            line = f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} {msg}"
+            print(line, flush=True)
+            if args.log_file:
+                with open(args.log_file, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        try:
+            if not ingest.watch(args.db, args.journal_dir, args.interval, log=log):
+                print("another journal ingester is already running", file=sys.stderr)
+                return 1
+        except KeyboardInterrupt:
+            pass
+        return 0
+    engine = database.make_engine(args.db)
+    try:
+        migrate.ensure_current(engine)
+        with database.session_scope(database.make_session_factory(engine)) as session:
+            from .journal import files as jfiles
+            directory = jfiles.journal_dir(args.journal_dir)
+            if not jfiles.find_journal_files(directory):
+                data = {"error": f"No journal files found in: {directory}"}
+            else:
+                data = ingest.sync(session, directory, rebuild=args.rebuild)
+                data["journal_dir"] = directory
+    finally:
+        engine.dispose()
+    emit(args, data, lambda d: print(d["error"] if "error" in d else
+                                     f"ingested {d['events']} events from {d['files']} file(s) in {d['seconds']}s"))
+    return 1 if "error" in data else 0
+
+
+def cmd_journal_status(args, session):
+    from .journal import ingest
+
+    def human(d):
+        svc = d["ingester"]
+        print(f"State: {d['state']}   (journals: {d['journal_dir']})")
+        print(f"Files: {d['files_ingested']} ingested of {d['files_on_disk']} on disk"
+              + (f", {len(d['files_to_ingest'])} to ingest ({d['bytes_behind']:,} bytes)" if d["files_to_ingest"] else ""))
+        print(f"Events in database: {d['events']:,}   newest {d['newest_event_in_db'] or '-'}")
+        nf = d["newest_journal_file"]
+        if nf:
+            print(f"Newest journal: {nf['name']} written {nf['modified']}")
+        for c in d["commanders"]:
+            print(f"Commander: {c['name'] or c['fid']}  {c['events']:,} events, last seen {c['last_seen']}")
+        print(f"Database writable: {d['database_writable']}   ingest URL configured: {d['ingest_url_configured']}")
+        print("Last ingest: " + (f"{d['last_ingest_minutes_ago']} min ago, {d['last_ingest_events']} events in "
+                                  f"{d['last_ingest_seconds']}s" if d["last_ingest_minutes_ago"] is not None else "never"))
+        if d["last_error"]:
+            print(f"Last error: {d['last_error']}")
+        print(f"Ingester service: {'running (pid %s)' % svc['pid'] if svc['running'] else 'not running'}"
+              + (f", heartbeat {svc['heartbeat_seconds_ago']}s ago" if svc["heartbeat_seconds_ago"] is not None else "")
+              + f", scheduled task: {svc['scheduled_task'] or 'not installed'}")
+    emit(args, ingest.journal_status(session, args.journal_dir), human)
+
+
+# ---- journal history and state views (database-backed; ingest on demand) -------
+
+def _jq(args, fn, **kw):
+    """Run a journal query: fresh unless --no-sync, from --journal-dir. Warn on stderr if the data may be behind."""
+    res = fn(args.session_obj, commander=args.commander, directory=args.journal_dir, fresh=not args.no_sync, **kw)
+    fr = res.get("journal_freshness") or {}
+    if fr.get("db_behind_journal") or fr.get("ingest_error"):
+        print(f"warning: journal data may be behind - {fr.get('ingest_error') or 'database not up to date'}", file=sys.stderr)
+    return res
+
+
+def _jerr(d):
+    if d.get("error"):
+        print(d["error"], file=sys.stderr)
+        return True
+    return False
+
+
+def _jemit(args, session, fn, human, csv_rows=None, **kw):
+    args.session_obj = session
+    data = _jq(args, fn, **kw)
+    emit(args, data, lambda d: None if _jerr(d) else human(d), csv_rows)
+
+
+def cmd_history(args, session):
+    from .journal import queries as jq
+
+    def human(d):
+        print(f"{d['matched']} matching events" + (f", showing {d['returned']}" if d["truncated"] else ""))
+        table(d["events"], [("Time", "ts"), ("Event", "event"), ("System", "system"), ("Station", "station"),
+                            ("What", lambda r: r.get("summary") or "")])
+    _jemit(args, session, jq.journal_events, human, lambda d: (["ts", "event", "system", "station", "body", "summary"],
+                                                              d.get("events", [])),
+           event=args.event, system=args.system, station=args.station, text=args.text, days=args.days, since=args.since,
+           until=args.until, limit=args.limit, include_data=args.data, oldest_first=args.oldest_first)
+
+
+def cmd_travel(args, session):
+    from .journal import queries as jq
+
+    def human(d):
+        print(f"{d['jumps']} jumps, {d['total_ly']} ly, {d['distinct_systems']} systems")
+        table(d["log"], [("Time", "ts"), ("System", "system"), ("Jump ly", lambda r: r["jump_ly"] if r["jump_ly"] is not None else "-"),
+                         ("Fuel used", lambda r: r["fuel_used"] if r["fuel_used"] is not None else "-"),
+                         ("Stayed min", lambda r: r["stayed_minutes"] if r["stayed_minutes"] is not None else "-"),
+                         ("Carrier", lambda r: "yes" if r["carrier"] else "")])
+    _jemit(args, session, jq.travel_log, human, lambda d: (["ts", "system", "jump_ly", "fuel_used", "fuel_level", "carrier",
+                                                            "stayed_minutes"], d.get("log", [])),
+           days=args.days, since=args.since, until=args.until, limit=args.limit)
+
+
+def cmd_visited(args, session):
+    from .journal import queries as jq
+
+    def human(d):
+        if "stations" in d:
+            print(f"{d['distinct_stations']} stations docked at")
+            table(d["stations"], [("Station", "station"), ("System", "system"), ("Dockings", "dockings"),
+                                  ("First", "first_docked"), ("Last", "last_docked")])
+        else:
+            print(f"{d['distinct_systems']} systems visited")
+            table(d["systems"], [("System", "system"), ("Visits", "visits"), ("First", "first_visit"), ("Last", "last_visit")])
+    fn = jq.visited_stations if args.stations else jq.visited_systems
+    _jemit(args, session, fn, human, days=args.days, since=args.since, limit=args.limit, system=args.system)
+
+
+def cmd_sessions(args, session):
+    from .journal import queries as jq
+    _jemit(args, session, jq.sessions,
+           lambda d: table(d["sessions"], [("Start", "start"), ("End", "end"), ("Hours", "hours"), ("Events", "events"),
+                                           ("Clean exit", lambda r: "yes" if r["ended_cleanly"] else "no"), ("File", "file")]),
+           days=args.days, since=args.since, limit=args.limit)
+
+
+def cmd_ledger(args, session):
+    from .journal import queries as jq
+
+    def human(d):
+        print(f"net {fmt_cr(d['net'])}  (earned {fmt_cr(d['earned'])}, spent {fmt_cr(d['spent'])}) over {d['entries_total']} entries")
+        table([dict(v, category=k) for k, v in d["by_category"].items()],
+              [("Category", "category"), ("Count", "count"), ("Earned", lambda r: fmt_cr(r["earned"])),
+               ("Spent", lambda r: fmt_cr(r["spent"])), ("Net", lambda r: fmt_cr(r["net"]))])
+        print()
+        table(d["entries"], [("Time", "ts"), ("Category", "category"), ("Amount", lambda r: fmt_cr(r["amount"])),
+                             ("Running", lambda r: fmt_cr(r["running"])), ("Event", "event"), ("Detail", lambda r: r.get("detail") or "")])
+    _jemit(args, session, jq.ledger, human, lambda d: (["ts", "category", "amount", "running", "event", "detail"],
+                                                       d.get("entries", [])),
+           days=args.days, since=args.since, until=args.until, category=args.category, limit=args.limit)
+
+
+def cmd_cargo(args, session):
+    from .journal import views
+
+    def human(d):
+        print(f"{d['total']} / {d['capacity']} t  (as of {show_time(d['as_of'])})")
+        table(d["items"], [("Commodity", lambda r: r["localised"] or r["name"]), ("Tons", "count")])
+    _jemit(args, session, views.cargo, human)
+
+
+def cmd_materials(args, session):
+    from .journal import views
+
+    def human(d):
+        print(f"as of {show_time(d['as_of'])}: " + ", ".join(f"{c} {n}" for c, n in d["totals"].items()))
+        for cat, items in d["materials"].items():
+            print(f"\n{cat}")
+            table(items, [("Material", lambda r: r["localised"] or r["name"]), ("Count", "count")])
+    _jemit(args, session, views.materials, human, category=args.category)
+
+
+def cmd_ships(args, session):
+    from .journal import views
+
+    def human(d):
+        cur = d.get("current")
+        if cur:
+            print(f"Current: {cur['type']} \"{cur['name']}\" {cur['ident']}  hull {fmt_cr(cur['hull_value'])}, modules "
+                  f"{fmt_cr(cur['modules_value'])}, rebuy {fmt_cr(cur['rebuy'])}, cargo {cur['cargo_capacity']} t, jump {cur['max_jump_range']:.1f} ly")
+            if cur.get("modules"):
+                table(cur["modules"], [("Slot", "slot"), ("Item", "item"), ("On", lambda r: "" if r["on"] else "off"),
+                                       ("Engineering", lambda r: f"{r['engineering']['blueprint']} G{r['engineering']['level']}"
+                                        if r["engineering"] else "")])
+        st = d.get("stored")
+        if st:
+            print(f"\nStored ships (as of {show_time(st['as_of'])}):")
+            table(st["here"] + st["remote"], [("Ship", "type"), ("Name", lambda r: r["name"] or ""), ("System", "system"),
+                                              ("Station", lambda r: r["station"] or ""), ("Value", lambda r: fmt_cr(r["value"]))])
+    _jemit(args, session, views.ships, human, modules=args.modules)
+
+
+def cmd_missions(args, session):
+    from .journal import views
+
+    def human(d):
+        print(f"{d['active_count']} active missions")
+        table(d["active"], [("Mission", lambda r: r.get("name") or ""), ("Faction", lambda r: r.get("faction") or ""),
+                            ("Reward", lambda r: fmt_cr(r.get("reward"))), ("Expires", lambda r: r.get("expires") or ""),
+                            ("To", lambda r: r.get("destination_system") or "")])
+        if d["expired_unresolved"]:
+            print(f"\n{len(d['expired_unresolved'])} past their expiry without a result in the journal")
+        print(f"\nLast {d['recent_days']} days: {len(d['recent'])} finished, rewards {fmt_cr(d['recent_reward_total'])}")
+        table(d["recent"], [("Time", "ts"), ("Result", "result"), ("Mission", lambda r: r.get("name") or ""),
+                            ("Reward", lambda r: fmt_cr(r.get("reward")))])
+    _jemit(args, session, views.missions, human, recent_days=args.days)
+
+
+def cmd_ranks(args, session):
+    from .journal import views
+
+    def human(d):
+        table([dict(v, area=k) for k, v in d["ranks"].items()],
+              [("Area", "area"), ("Rank", "name"), ("Progress %", lambda r: r["progress_pct"] if r["progress_pct"] is not None else "-")])
+        print("\nReputation: " + ", ".join(f"{k} {v:.1f}" for k, v in d["reputation"].items()))
+    _jemit(args, session, views.reputation, human)
+
+
+def cmd_stats(args, session):
+    from .journal import views
+
+    def human(d):
+        for sec, vals in d["statistics"].items():
+            print(f"\n{sec}")
+            for k, v in vals.items():
+                print(f"  {k}: {v:,}" if isinstance(v, (int, float)) else f"  {k}: {v}")
+    _jemit(args, session, views.commander_stats, human, section=args.section)
+
+
+def cmd_carrier(args, session):
+    from .journal import views
+
+    def human(d):
+        c = d["carrier"]
+        print(f"{c.get('Name')} ({c.get('Callsign')})  as of {show_time(d['as_of'])}")
+        print(f"fuel {c.get('FuelLevel')} t, jump range {c.get('JumpRangeCurr')} ly, docking {c.get('DockingAccess')}")
+        fin, space = c.get("Finance") or {}, c.get("SpaceUsage") or {}
+        print(f"balance {fmt_cr(fin.get('CarrierBalance'))}, free space {space.get('FreeSpace')} of {space.get('TotalCapacity')}")
+    _jemit(args, session, views.carrier, human)
+
+
 # ---- argument parsing -------------------------------------------------------
 
 def build_parser():
@@ -670,7 +920,7 @@ def build_parser():
         sp = sub.add_parser(name, help=help_, description=help_)
         sp.set_defaults(func=fn)
         sp.add_argument("--json", action="store_true", help="machine-readable JSON output")
-        if name in ("price-history", "factions", "timeline", "traffic", "busiest", "find-systems", "faction-stations"):
+        if name in ("price-history", "factions", "timeline", "traffic", "busiest", "find-systems", "faction-stations", "history", "travel", "ledger"):
             sp.add_argument("--csv", action="store_true", help="CSV on stdout (redirect to a file for charting)")
         if live_opt:
             sp.add_argument("--live", action="store_true", help="query EDSM if local data is missing or stale")
@@ -843,6 +1093,59 @@ def build_parser():
                                       "carrier_market,maintenance,rebuy,crew_wages (default all)")
     sp.add_argument("--crew-wages", action="store_true", help="also show wages paid per NPC crew member")
     sp.add_argument("--session", action="store_true", help="only the most recent journal file")
+    sp.add_argument("--from-db", action="store_true",
+                    help="compute from the ingested events in the database (fast; ingests new lines first)")
+    def jadd(name, fn, help_, days=None, limit=None, since=False):
+        """A journal-database command: --commander, --journal-dir, --no-sync plus the usual window/limit options."""
+        sp = add(name, fn, help_)
+        sp.add_argument("--commander", help="commander name or FID (default: the most recently seen)")
+        sp.add_argument("--journal-dir", help="journal folder to check for new lines (default: $ELITE_JOURNAL_DIR or Saved Games)")
+        sp.add_argument("--no-sync", action="store_true", help="do not ingest new journal lines first; use what is stored")
+        if days is not None:
+            sp.add_argument("--days", type=int, default=days or None, help="only the last N days" + (f" (default {days})" if days else ""))
+        if since:
+            sp.add_argument("--since", help="start time, YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS (UTC)")
+        if limit:
+            sp.add_argument("--limit", type=int, default=limit)
+        return sp
+
+    sp = jadd("history", cmd_history, "Search your journal history by event, system, station, text and time", 0, 50, True)
+    sp.add_argument("--event", help="event name(s), comma separated, e.g. Docked,FSDJump")
+    sp.add_argument("--system")
+    sp.add_argument("--station")
+    sp.add_argument("--text", help="case-insensitive text anywhere in the event")
+    sp.add_argument("--until", help="end time (UTC)")
+    sp.add_argument("--data", action="store_true", help="include the raw event JSON (with --json)")
+    sp.add_argument("--oldest-first", action="store_true")
+    sp = jadd("travel", cmd_travel, "Travel log: jumps with distance, fuel and time spent in each system", 30, 50, True)
+    sp.add_argument("--until", help="end time (UTC)")
+    sp = jadd("visited", cmd_visited, "Systems you have jumped to (or --stations docked at) with visit counts", 0, 30, True)
+    sp.add_argument("--stations", action="store_true")
+    sp.add_argument("--system", help="only this system")
+    jadd("sessions", cmd_sessions, "Play sessions: one per journal file, with duration and event count", 0, 20, True)
+    sp = jadd("ledger", cmd_ledger, "Every credit movement the journal records, by category, with running total", 7, 40, True)
+    sp.add_argument("--until", help="end time (UTC)")
+    sp.add_argument("--category", help="comma separated: trading,bounty,mission,exploration,maintenance,ship,module,...")
+    jadd("cargo", cmd_cargo, "What your ship carries now (rebuilt from the journal)")
+    sp = jadd("materials", cmd_materials, "Raw, manufactured and encoded materials (rebuilt from the journal)")
+    sp.add_argument("--category", choices=["raw", "manufactured", "encoded"])
+    sp = jadd("ships", cmd_ships, "Your current ship with modules, and stored ships")
+    sp.add_argument("--modules", action="store_true", help="also list the current ship's modules")
+    jadd("missions", cmd_missions, "Active missions and recently finished ones", 14)
+    jadd("ranks", cmd_ranks, "Ranks with progress, and superpower reputation")
+    sp = jadd("stats", cmd_stats, "The game's Statistics snapshot (bank, combat, trading, exploration, ...)")
+    sp.add_argument("--section", help="one block, e.g. Bank_Account, Combat, Exploration, Trading")
+    jadd("carrier", cmd_carrier, "Your fleet carrier as last reported")
+    sp = add("journal-sync", cmd_journal_sync, "Ingest new journal lines into the database (once, or --watch as a service)")
+    sp.set_defaults(raw=True)
+    sp.add_argument("--journal-dir", help="journal folder (default: $ELITE_JOURNAL_DIR or the Saved Games folder)")
+    sp.add_argument("--rebuild", action="store_true", help="re-read every journal file from scratch")
+    sp.add_argument("--watch", action="store_true", help="keep running and ingest as the game writes")
+    sp.add_argument("--interval", type=float, default=30, help="with --watch: seconds between passes (default 30)")
+    sp.add_argument("--log-file", help="with --watch: also append log lines here")
+    sp = add("journal-status", cmd_journal_status,
+             "Is the database up to date with your journal files? Ingest state, writer access, ingester service")
+    sp.add_argument("--journal-dir", help="journal folder (default: $ELITE_JOURNAL_DIR or the Saved Games folder)")
     return p
 
 
