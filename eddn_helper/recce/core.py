@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from .. import database, live, queries
 from ..journal import context as journal_context
 from . import config as rcfg
+from . import expansion
 
 MAX_ROWS = 200
 HISTORY_DAYS = 14
@@ -217,7 +218,8 @@ class Core:
             if "error" in res:
                 raise CoreError(res["error"])
             res, live_info = self._maybe_live(cfg, kw, res, now)
-            rows = self._rows(s, cfg, res, state_key, now)
+            ctx = expansion.Context(s, expansion.RULESET["params"]) if cfg["expansion_estimate"] else None
+            rows = self._rows(s, cfg, res, state_key, now, ctx)
         unknown = res.get("faction_players_unknown", 0) if cfg["filters"]["player_faction_only"] else 0
         live_info["remaining_unknown"] = unknown
         rows = self._order(cfg, rows)
@@ -277,7 +279,7 @@ class Core:
         self._history[key] = {"sig": sig, "at": t, "run": run}
         return run
 
-    def _rows(self, session, cfg, res, state_key, now):
+    def _rows(self, session, cfg, res, state_key, now, ctx=None):
         f = cfg["filters"]
         kinds = f["kinds"] if f["state_in"] == "any" else None
         rows = []
@@ -307,8 +309,19 @@ class Core:
                     "last_update_at": iso(last),
                     "stale": last is None or (now - last) > timedelta(hours=STALE_ROW_HOURS)}
                 row["highlight"] = is_highlighted(row, cfg["highlight_rules"], now)
+                row["expansion"] = self._expansion(ctx, row, kind, state_key)
                 rows.append(row)
         return rows
+
+    @staticmethod
+    def _expansion(ctx, row, kind, state_key):
+        """The Expansion chance estimate for a pending Expansion row; None for anything else. It never raises."""
+        if ctx is None or kind != "pending" or state_key != "expansion":
+            return None
+        try:
+            return expansion.evaluate(ctx, row)
+        except Exception as e:                  # the estimate is a bonus: never lose the dashboard over it
+            return {"error": f"{type(e).__name__}: {e}"}
 
     def _order(self, cfg, rows):
         value, desc = _sort_key(cfg)
@@ -326,4 +339,4 @@ def column_labels(cfg):
         and cfg["filters"]["controlling_only"] else "Faction",
         "economy": "Economy", "pending_for": f"{state} pending for", "state": "Current state",
         "last_update": "Time since last update", "distance": "Distance (ly)", "population": "Population",
-        "influence": "Influence"}
+        "influence": "Influence", "expansion_chance": "Expansion chance"}

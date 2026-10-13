@@ -482,9 +482,10 @@ def dashboard_create(config: dict) -> dict:
     (name, list, or null), min_population, controlling_only, player_faction_only, faction_state (e.g. "Expansion"),
     state_in (any|pending|active|recovering), kinds (with state_in "any": which of pending, active, recovering, other
     to show)}, columns (ordered from: system, faction, economy, pending_for, state, last_update, distance, population,
-    influence), sort {by: state|pending_for|system|faction|distance|population|influence|last_update, order:
+    influence, expansion_chance), sort {by: state|pending_for|system|faction|distance|population|influence|last_update, order:
     asc|desc}, highlight_rules [{when: active_for_under_hours|pending_for_over_hours, hours}], live_fetch {enabled,
-    max_requests (at most 10 EDSM requests per refresh)}, stale_after_minutes. Missing keys take the defaults, which
+    max_requests (at most 10 EDSM requests per refresh)}, expansion_estimate (true/false: estimate how likely each pending
+    Expansion is to go ahead, shown in the expansion_chance column), stale_after_minutes. Missing keys take the defaults, which
     are the Agriculture / Expansion pending-or-active dashboard named "recce". Invalid configs come back as an error
     listing every problem.
     """

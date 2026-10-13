@@ -11,7 +11,8 @@ from .. import config as app_config
 ENV_DIR = "ELITE_HELPER_RECCE_DIR"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
-COLUMNS = ("system", "faction", "economy", "pending_for", "state", "last_update", "distance", "population", "influence")
+COLUMNS = ("system", "faction", "economy", "pending_for", "state", "last_update", "distance", "population", "influence",
+           "expansion_chance")
 SORT_KEYS = ("state", "pending_for", "system", "faction", "distance", "population", "influence", "last_update")
 STATE_IN = ("any", "pending", "active", "recovering")
 KINDS = ("pending", "active", "recovering", "other")
@@ -35,7 +36,8 @@ DEFAULT_CONFIG = {
         "state_in": "any",
         "kinds": ["pending", "active"],
     },
-    "columns": ["system", "faction", "economy", "pending_for", "state", "last_update"],
+    "columns": ["system", "faction", "economy", "pending_for", "state", "expansion_chance", "last_update"],
+    "expansion_estimate": True,
     "sort": {"by": "state", "order": "asc"},
     "highlight_rules": [{"when": "active_for_under_hours", "hours": 48}],
     "live_fetch": {"enabled": True, "max_requests": MAX_LIVE_REQUESTS},
@@ -161,6 +163,7 @@ def validate(raw):
     if not isinstance(cfg["origin"], str) or not cfg["origin"].strip():
         errors.append("origin: must be a system name, or \"current\" to use your position from the journal")
     _check_number(errors, "radius_ly", cfg["radius_ly"], lo=1, hi=1000)
+    _check_bool(errors, "expansion_estimate", cfg["expansion_estimate"])
 
     f = cfg["filters"]
     for k in f:
