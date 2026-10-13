@@ -297,7 +297,7 @@ class Core:
                     run = self._run_for(session, r["system"], fac["faction"], kind, state_key, sig, now)
                 row = {
                     "key": f"{r['system']}|{fac['faction']}", "system": r["system"], "faction": fac["faction"],
-                    "influence_pct": fac.get("influence_pct"), "main_state": fac.get("state"),
+                    "influence_pct": fac.get("influence_pct"), "main_state": fac.get("state"), "is_player": fac.get("is_player"),
                     "economy": r["economy"], "second_economy": r.get("second_economy"),
                     "population": r.get("population"), "distance_ly": r.get("distance_ly"),
                     "kind": kind, "war": bool(r.get("in_conflict")), "conflict_types": r.get("conflict_types") or [],

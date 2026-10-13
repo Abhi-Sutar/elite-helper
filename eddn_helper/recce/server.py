@@ -6,6 +6,7 @@ One Runner thread per open dashboard polls the database cheaply and re-runs the 
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -387,6 +388,19 @@ class Handler(BaseHTTPRequestHandler):
             except rcfg.ConfigError as e:
                 return self._send(400, {"error": "; ".join(e.errors)})
             return self._send(200, {"name": name, "radius_ly": cfg["radius_ly"]})
+        if urlparse(self.path).path == "/api/player-only" and self.headers.get("X-Recce") == "1":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("d") or [None])[0]
+            if not name or not rcfg.exists(name):
+                return self._send(404, {"error": f"no dashboard named {name!r}" if name else "add ?d=<dashboard>"})
+            on = {"1": True, "true": True, "0": False, "false": False}.get((q.get("on") or [""])[0].lower())
+            if on is None:
+                return self._send(400, {"error": "on: must be 1 or 0"})
+            try:
+                cfg = rcfg.update(name, {"filters": {"player_faction_only": on}})
+            except rcfg.ConfigError as e:
+                return self._send(400, {"error": "; ".join(e.errors)})
+            return self._send(200, {"name": name, "player_faction_only": cfg["filters"]["player_faction_only"]})
         if urlparse(self.path).path == "/api/recentre" and self.headers.get("X-Recce") == "1":
             name = (parse_qs(urlparse(self.path).query).get("d") or [None])[0]
             runner = self.server.manager.get(name) if name else None
@@ -594,6 +608,74 @@ def ensure_server(port=0, wait=15.0):
             lock.unlink()
         except OSError:
             pass
+
+
+SERVE_RE = re.compile(r"eddn_helper\.recce\s+serve\b")
+
+
+def _cim_time(value):
+    """ConvertTo-Json writes dates as '/Date(1791889570752)/' (UTC milliseconds); show them as local time."""
+    m = re.search(r"-?\d+", str(value or ""))
+    if not m:
+        return ""
+    return datetime.fromtimestamp(int(m.group()) / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _process_table():
+    """[{pid, parent, started, cmd}] for every process on the machine. Windows: PowerShell/CIM; elsewhere: ps."""
+    if os.name == "nt":
+        ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine "
+              "| ConvertTo-Json -Compress")
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                             text=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+        rows = json.loads(out or "[]")
+        rows = rows if isinstance(rows, list) else [rows]
+        return [{"pid": int(r["ProcessId"]), "parent": int(r["ParentProcessId"] or 0),
+                 "started": _cim_time(r.get("CreationDate")), "cmd": r.get("CommandLine") or ""}
+                for r in rows if r.get("ProcessId") is not None]
+    out = subprocess.run(["ps", "-eo", "pid=,ppid=,lstart=,args="], capture_output=True, text=True, timeout=30).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) >= 8 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append({"pid": int(parts[0]), "parent": int(parts[1]), "started": " ".join(parts[2:7]),
+                         "cmd": parts[7]})
+    return rows
+
+
+def find_servers(table=None):
+    """
+    Every running `eddn_helper.recce serve` as a group: {"root", "pids", "started", "registered"}. On Windows a venv
+    python starts the real interpreter as a child, so a server is one group of two processes; the root is the one
+    whose parent is not itself a Recce server. `registered` is true for the group holding the pid in server.json.
+    """
+    table = _process_table() if table is None else table
+    procs = {p["pid"]: p for p in table if SERVE_RE.search(p["cmd"]) and p["pid"] != os.getpid()}
+    try:
+        reg = int(json.loads(info_path().read_text(encoding="utf-8")).get("pid"))
+    except (OSError, ValueError, TypeError):
+        reg = None
+    groups = []
+    for pid, p in sorted(procs.items()):
+        if p["parent"] in procs:
+            continue
+        pids = [pid] + [c for c, q in procs.items() if q["parent"] == pid]
+        groups.append({"root": pid, "pids": pids, "started": p["started"], "registered": reg in pids})
+    return groups
+
+
+def kill_server(group):
+    """Force-stop a server group and its children."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(group["root"]), "/T", "/F"], capture_output=True, timeout=30,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        import signal
+        for pid in reversed(group["pids"]):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def stop_server(wait=8.0):

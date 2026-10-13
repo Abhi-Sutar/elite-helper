@@ -47,6 +47,30 @@ def cmd_stop(args):
     return 0
 
 
+def cmd_status(args):
+    running = server.running_server()
+    groups = server.find_servers()
+    print("registered server: " + (f"{running['base_url']}/ (pid {running['pid']})" if running else "none"))
+    print(f"server processes found: {len(groups)}")
+    for g in groups:
+        tag = "registered" if g["registered"] else "STRAY"
+        print(f"  {tag:<10} pid {g['root']} (+{len(g['pids']) - 1} child) started {g['started']}")
+    strays = [g for g in groups if not g["registered"]]
+    if not strays:
+        print("OK: no stray servers.")
+        return 0
+    if not args.kill_strays:
+        print(f"{len(strays)} stray server(s). Run: elite-dash status --kill-strays")
+        return 1
+    for g in strays:
+        server.kill_server(g)
+        print(f"killed stray server pid {g['root']}")
+    left = [g for g in server.find_servers() if not g["registered"]]
+    if left:
+        return _err(f"{len(left)} stray server(s) are still running")
+    return 0
+
+
 def cmd_list(args):
     rcfg.ensure_default()
     running = server.running_server()
@@ -148,6 +172,10 @@ def build_parser():
 
     s = sub.add_parser("stop", help="stop the background server")
     s.set_defaults(func=cmd_stop)
+
+    s = sub.add_parser("status", help="count running Recce servers and find strays")
+    s.add_argument("--kill-strays", action="store_true", help="force-stop every server that is not the registered one")
+    s.set_defaults(func=cmd_status)
 
     s = sub.add_parser("list", help="list dashboards")
     s.set_defaults(func=cmd_list)
