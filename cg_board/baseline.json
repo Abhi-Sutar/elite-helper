@@ -86,5 +86,21 @@
    "Malvern Prospect": 917,
    "Malerba Landing": 331
   }
+ },
+ "bert": {
+  "baselineAt": "2026-10-13T18:20:20Z",
+  "base": {}
+ },
+ "gall": {
+  "baselineAt": "2026-10-13T18:20:20Z",
+  "base": {}
+ },
+ "indi": {
+  "baselineAt": "2026-10-13T18:20:20Z",
+  "base": {}
+ },
+ "colt": {
+  "baselineAt": "2026-10-13T18:20:20Z",
+  "base": {}
  }
 }

@@ -4,14 +4,53 @@
   "port": 8765,
   "refresh_seconds": 30,
   "max_age_hours": 72,
-  "target": { "name": "Zero Squared", "system": "HIP 74116" },
-  "ship": { "name": "Le Big Plipper", "laden_ly": 31.34, "unladen_ly": 45.22, "cargo": 1147 },
-  "station_types": ["Coriolis", "Orbis", "Ocellus", "Bernal", "Dodec", "AsteroidBase"],
+  "target": {
+    "name": "Cabot Vision",
+    "system": "Col 285 Sector GN-H c11-5"
+  },
+  "ship": {
+    "name": "Le Big Plipper",
+    "laden_ly": 31.34,
+    "unladen_ly": 45.22,
+    "cargo": 1147
+  },
+  "station_types": [
+    "Coriolis",
+    "Orbis",
+    "Ocellus",
+    "Bernal",
+    "Dodec",
+    "AsteroidBase"
+  ],
   "min_stock": 1,
   "tabs": [
-    { "key": "super", "label": "Superconductors",     "commodity": "superconductors",    "cg_price": 65510, "max_jumps": 4, "min_stock": 1000 },
-    { "key": "semi",  "label": "Semiconductors",      "commodity": "semiconductors",     "cg_price": 10840, "max_jumps": 2 },
-    { "key": "power", "label": "Power Generators",    "commodity": "powergenerators",    "cg_price": 23880, "max_jumps": 2 },
-    { "key": "comp",  "label": "Computer Components", "commodity": "computercomponents", "cg_price": 7080,  "max_jumps": 2 }
+    {
+      "key": "bert",
+      "label": "Bertrandite",
+      "commodity": "bertrandite",
+      "max_jumps": 2,
+      "cg_price": 0
+    },
+    {
+      "key": "gall",
+      "label": "Gallite",
+      "commodity": "gallite",
+      "max_jumps": 2,
+      "cg_price": 0
+    },
+    {
+      "key": "indi",
+      "label": "Indite",
+      "commodity": "indite",
+      "max_jumps": 2,
+      "cg_price": 0
+    },
+    {
+      "key": "colt",
+      "label": "Coltan",
+      "commodity": "coltan",
+      "max_jumps": 2,
+      "cg_price": 0
+    }
   ]
 }

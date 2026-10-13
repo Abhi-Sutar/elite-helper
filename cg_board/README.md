@@ -15,6 +15,11 @@ then open http://127.0.0.1:8765/ (--open does it for you).
 - To track a new commodity or CG, add a tab: key, label, commodity (name as find_commodity takes it, e.g.
   "superconductors"), cg_price, max_jumps (or max_ly), optional min_stock / station_types / max_age_hours.
 - To change the delivery target, edit "target" (name and exact system name) and the "ship" numbers.
+- The config is re-read on every refresh, so changes to the target, tabs and ship apply within refresh_seconds, no
+  restart. "port", "database_url" and "helper_dir" still need one. When the target system changes, the "Change"
+  baselines restart on their own (they are only meaningful around one target; baseline.json remembers it as "_target").
+- The elite-helper MCP server can move the target too: `cg_board_set_target(system, station?)` (system "current" = your
+  journal position; the system must be in the database with coordinates) and `cg_board_target()` to read it.
 - python cg_board/cg_board.py once          write data.json one time
 - python cg_board/cg_board.py reset [tab]   restart the "Change" baseline
 - Distance to star (Ls) is not in the database. It is fetched from EDSM once per system and cached in ls_cache.json.
