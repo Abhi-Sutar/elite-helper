@@ -149,6 +149,41 @@ class SelectionTests(CoreCase):
         self.assertIn("newest_market_update", stamps)
 
 
+class PlayerToggleTests(CoreCase):
+    def setUp(self):
+        super().setUp()
+        self.put(1, "Player Sys", [(3, pending("PlayerP"))], pos=(10, 0, 0))
+        self.put(2, "Npc Sys", [(3, pending("NpcN"))], pos=(20, 0, 0))
+        self.put(3, "Mystery Sys", [(3, pending("Mystery"))], pos=(30, 0, 0))
+        self.players({"PlayerP": True, "NpcN": False})
+        self.off = rcfg.validate(dict(self.cfg, filters=dict(self.cfg["filters"], player_faction_only=False)))
+
+    def test_on_shows_only_known_player_factions(self):
+        data = self.snap()
+        self.assertEqual([r["system"] for r in data["rows"]], ["Player Sys"])
+        self.assertEqual(data["hidden_unknown_player"], 1)
+        self.assertTrue(data["rows"][0]["is_player"])
+
+    def test_off_shows_everyone_tagged_and_hides_nothing(self):
+        data = self.snap(self.off)
+        by = {r["system"]: r["is_player"] for r in data["rows"]}
+        self.assertEqual(by, {"Player Sys": True, "Npc Sys": False, "Mystery Sys": None})
+        self.assertEqual(data["hidden_unknown_player"], 0)
+        self.assertEqual(rcfg_labels(self.off)["faction"], "Faction")
+        self.assertEqual(rcfg_labels(self.cfg)["faction"], "Player controlling faction")
+
+    def test_off_makes_no_edsm_requests_even_with_a_writer(self):
+        with mock.patch.object(external, "_get") as get:
+            c = core.Core(lambda: self.factory, writer=lambda: self.factory(), where=lambda: {})
+            data = c.snapshot(self.off, now=NOW)
+        get.assert_not_called()
+        self.assertEqual(data["live_fetch"]["requests"], 0)
+
+
+def rcfg_labels(cfg):
+    return core.column_labels(cfg)
+
+
 class RecentreTests(CoreCase):
     def setUp(self):
         super().setUp()

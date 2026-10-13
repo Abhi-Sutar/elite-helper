@@ -403,6 +403,7 @@ scripts\elite-dash show recce --data        # config, plus one query run printed
 scripts\elite-dash new close-in --origin "Praea Euq YE-Y b1-3" --radius 40 --economy Agriculture --min-pop 1000000 --state-in pending --refresh 20
 scripts\elite-dash edit close-in --set radius_ly=60 --set filters.min_population=500000
 scripts\elite-dash delete close-in
+scripts\elite-dash status                   # count running servers; --kill-strays force-stops any that are not the registered one
 scripts\elite-dash stop                     # ask the background server to exit
 ```
 
@@ -437,7 +438,8 @@ folder). Missing keys take the defaults below; errors name the field (`refresh_s
   "filters": {"economy": "Agriculture", "min_population": 1000000, "controlling_only": true,
               "player_faction_only": true, "faction_state": "Expansion", "state_in": "any",
               "kinds": ["pending", "active"]},
-  "columns": ["system", "faction", "economy", "pending_for", "state", "last_update"],
+  "columns": ["system", "faction", "economy", "pending_for", "state", "expansion_chance", "last_update"],
+  "expansion_estimate": true,
   "sort": {"by": "state", "order": "asc"},
   "highlight_rules": [{"when": "active_for_under_hours", "hours": 48}],
   "live_fetch": {"enabled": true, "max_requests": 10},
@@ -451,11 +453,21 @@ folder). Missing keys take the defaults below; errors name the field (`refresh_s
   moment, so it stays put as you jump around. The page shows a "Recentre on <system>" button to move the anchor to
   where you are now (also `elite-dash recentre [name]` and the `dashboard_recentre` tool). To follow your position
   live instead, set the origin to `current` with `edit --set origin=current` or `dashboard_update`.
+- The page header has a Radius box, a "Player factions only" switch and the Recentre button; each writes the dashboard's
+  config (`radius_ly`, `filters.player_faction_only`, `origin`), so the CLI and MCP see the same values. With the switch off,
+  NPC and unchecked factions are listed with a PLAYER / NPC / ? tag and no EDSM lookups are made.
 - `state_in`: `any`, `pending`, `active` or `recovering`. With `any`, `kinds` picks which of `pending`, `active`,
   `recovering`, `other` are shown.
 - `columns` (ordered): `system`, `faction`, `economy`, `pending_for`, `state`, `last_update`, `distance`,
-  `population`, `influence`. `sort.by`: `state`, `pending_for`, `system`, `faction`, `distance`, `population`,
+  `population`, `influence`, `expansion_chance`. `sort.by`: `state`, `pending_for`, `system`, `faction`, `distance`, `population`,
   `influence`, `last_update`.
+- `expansion_estimate` (default `true`) and the `expansion_chance` column: for each **pending** Expansion row the page shows a
+  Likely / Possible / Unlikely / Uncertain chip with a percentage. Click the row to see which rules passed, failed or
+  could not be checked, with a confidence tag on each. It is a heuristic built from developer comments and community
+  tracking (75% influence threshold, 7-faction cap, 20/30/60 ly search ladder, War/Civil War/Election holding the
+  countdown, happiness tie-break between origins), not an official calculation. The rules are data in
+  `eddn_helper/recce/expansion_rules.py`: edit the numbers, wording or weights there when the mechanics change, and
+  add a function to `expansion.CHECKS` only for a new kind of rule.
 - `highlight_rules`: `active_for_under_hours` or `pending_for_over_hours`, re-checked in the browser every second.
 
 ### How it behaves

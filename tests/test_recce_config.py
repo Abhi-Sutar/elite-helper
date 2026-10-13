@@ -25,7 +25,16 @@ class ValidateTests(unittest.TestCase):
                           f["faction_state"], f["kinds"]), ("Agriculture", 1000000, True, True, "Expansion",
                                                             ["pending", "active"]))
         self.assertEqual((cfg["origin"], cfg["radius_ly"], cfg["refresh_seconds"]), ("current", 100, 20))
-        self.assertEqual(cfg["columns"], ["system", "faction", "economy", "pending_for", "state", "last_update"])
+        self.assertEqual(cfg["columns"], ["system", "faction", "economy", "pending_for", "state", "expansion_chance",
+                                       "last_update"])
+        self.assertIs(cfg["expansion_estimate"], True)
+
+    def test_expansion_settings_are_validated_and_old_configs_still_load(self):
+        old = rcfg.validate({"name": "old", "columns": ["system", "faction", "last_update"]})
+        self.assertEqual(old["columns"], ["system", "faction", "last_update"])
+        self.assertIs(old["expansion_estimate"], True)
+        self.assertEqual(rcfg.validate({"columns": ["system", "expansion_chance"]})["columns"], ["system", "expansion_chance"])
+        self.assertTrue(any(e.startswith("expansion_estimate") for e in self.errors({"expansion_estimate": "yes"})))
 
     def test_minimal_config_gets_defaults(self):
         cfg = rcfg.validate({"name": "mine", "radius_ly": 40})
