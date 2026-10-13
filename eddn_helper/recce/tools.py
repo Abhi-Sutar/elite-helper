@@ -27,8 +27,8 @@ def _with_server(name, cfg=None, **extra):
 
 def create(config):
     try:
-        cfg = rcfg.save(config)
-        return _with_server(cfg["name"], cfg)
+        cfg, note = rcfg.save_new(config)
+        return _with_server(cfg["name"], cfg, **({"note": note} if note else {}))
     except (rcfg.ConfigError, KeyError, RuntimeError) as e:
         return _fail(e)
 
@@ -53,7 +53,11 @@ def list_dashboards():
             err = None
         except (rcfg.ConfigError, KeyError) as e:
             title, err = None, _fail(e)["error"]
-        items.append({"name": n, "title": title, "url": server.dashboard_url(base, n) if base else None,
+        origin = None if err else rcfg.load(n)["origin"]
+        items.append({"name": n, "title": title, "origin": origin,
+                      "origin_mode": None if origin is None else ("following you" if origin.lower() == "current"
+                                                                   else "anchored"),
+                      "url": server.dashboard_url(base, n) if base else None,
                       **({"error": err} if err else {})})
     return {"server_running": bool(running), "server_url": base + "/" if base else None, "dashboards": items,
             "note": None if running else "the server is not running; dashboard_open starts it and returns the URL"}
@@ -68,6 +72,19 @@ def open_dashboard(name, browser=True):
         if browser:
             out["browser_opened"] = bool(webbrowser.open(out["url"]))
         return out
+    except (rcfg.ConfigError, KeyError, RuntimeError) as e:
+        return _fail(e)
+
+
+def recentre(name):
+    """Anchor a dashboard on the commander's current system (open browsers update by themselves)."""
+    try:
+        from .core import Core, CoreError
+        try:
+            res = Core(None).recentre(name)
+        except CoreError as e:
+            return {"error": str(e)}
+        return _with_server(name, origin=res["origin"], previous_origin=res["previous"])
     except (rcfg.ConfigError, KeyError, RuntimeError) as e:
         return _fail(e)
 

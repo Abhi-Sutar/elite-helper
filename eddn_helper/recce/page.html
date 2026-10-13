@@ -35,6 +35,16 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--fo
 header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
 h1 { font-size: clamp(1.4rem, 3.4vw, 2rem); font-weight: 800; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
 .sub { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; max-width: 70ch; line-height: 1.45; }
+button { font: inherit; font-weight: 600; color: var(--fg); background: var(--panel); border: 1px solid var(--accent);
+         border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:disabled { border-color: var(--line); color: var(--muted); cursor: default; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.radius { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.85rem; }
+input[type=number] { font: inherit; font-family: var(--font-num); font-variant-numeric: tabular-nums; width: 5.5em;
+                     color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+input[type=number]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#toast { color: var(--muted); font-size: 0.85rem; }
 select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
          padding: 6px 10px; }
 .status { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; padding: 10px 14px;
@@ -85,7 +95,13 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
       <h1 id="title">Recce</h1>
       <p class="sub" id="sub"></p>
     </div>
-    <select id="switch" aria-label="Dashboard" hidden></select>
+    <div class="tools">
+      <span id="toast" role="status"></span>
+      <label class="radius" title="Search radius around the centre system">Radius
+        <input id="radius" type="number" min="1" max="1000" step="1" inputmode="decimal"> ly</label>
+      <button id="recentre" type="button" hidden></button>
+      <select id="switch" aria-label="Dashboard" hidden></select>
+    </div>
   </header>
 
   <section class="status" aria-label="Data status">
@@ -172,8 +188,9 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     var eco = f.economy ? [].concat(f.economy).join(' or ') : 'Any economy';
     bits.push(eco + ' systems');
     if (f.min_population) bits.push('of ' + pop(f.min_population) + ' population or more');
+    var follow = c.origin.toLowerCase() === 'current';
     var o = (S.data && S.data.origin && S.data.origin.name) || c.origin;
-    bits.push('within ' + c.radius_ly + ' ly of ' + (c.origin === 'current' ? 'your position (' + o + ')' : o));
+    bits.push('within ' + c.radius_ly + ' ly of ' + (follow ? 'your position (' + o + ', following you)' : c.origin + ' (anchored)'));
     var tail = [];
     if (f.controlling_only) tail.push('controlled by ' + (f.player_faction_only ? 'a player faction' : 'a faction'));
     else if (f.player_faction_only) tail.push('with a player faction');
@@ -220,6 +237,7 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     if (!S.cfg) return;
     var cols = S.cfg.columns, now = Date.now();
     document.title = S.cfg.title;
+    if (document.activeElement !== $('radius')) $('radius').value = S.cfg.radius_ly;
     $('title').textContent = S.cfg.title;
     $('sub').textContent = subtitle();
     $('head').innerHTML = cols.map(function (c) { return '<th>' + esc(S.labels[c] || c) + '</th>'; }).join('');
@@ -254,7 +272,40 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     return 'No system matches right now.';
   }
 
+  function renderRecentre() {
+    var b = $('recentre'), cur = S.status && S.status.current_system;
+    var follow = S.cfg && S.cfg.origin.toLowerCase() === 'current';
+    b.hidden = !S.cfg || !cur;
+    if (b.hidden) return;
+    var same = !follow && cur.toLowerCase() === S.cfg.origin.toLowerCase();
+    b.disabled = same || S.busy;
+    b.textContent = same ? 'Centred on your current system' : (follow ? 'Anchor here: ' : 'Recentre on ') + cur;
+  }
+
+  function recentre() {
+    S.busy = true; renderRecentre();
+    fetch('/api/recentre?d=' + encodeURIComponent(NAME), { method: 'POST', headers: { 'X-Recce': '1' } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (x) { toast(x.ok ? (x.j.previous === x.j.origin ? 'Already centred on ' + x.j.origin : 'Recentred on ' + x.j.origin) : x.j.error); })
+      .catch(function () { toast('Could not reach the Recce server.'); })
+      .then(function () { S.busy = false; renderRecentre(); });
+  }
+  function setRadius() {
+    var inp = $('radius'), v = inp.value.trim();
+    if (!S.cfg || v === '' || Number(v) === S.cfg.radius_ly) { if (S.cfg) inp.value = S.cfg.radius_ly; return; }
+    fetch('/api/radius?d=' + encodeURIComponent(NAME) + '&ly=' + encodeURIComponent(v), { method: 'POST', headers: { 'X-Recce': '1' } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (x) { if (x.ok) toast('Radius set to ' + x.j.radius_ly + ' ly'); else { toast(x.j.error); inp.value = S.cfg.radius_ly; } })
+      .catch(function () { toast('Could not reach the Recce server.'); });
+  }
+  function toast(t) {
+    $('toast').textContent = t;
+    clearTimeout(S.toastTimer);
+    S.toastTimer = setTimeout(function () { $('toast').textContent = ''; }, 6000);
+  }
+
   function renderStatus() {
+    renderRecentre();
     var st = S.status, pill = $('pill'), state = S.connected || !S.cfg ? (st ? st.state : 'loading') : 'offline';
     if (!S.connected && S.cfg && S.everConnected) state = 'offline';
     var label = { live: 'Live', stale: 'Stale', error: 'Error', loading: 'Loading', offline: 'Offline' }[state] || state;
@@ -334,6 +385,9 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     es.onerror = function () { S.connected = false; renderStatus(); };
   }
 
+  $('recentre').addEventListener('click', recentre);
+  $('radius').addEventListener('change', setRadius);
+  $('radius').addEventListener('keydown', function (e) { if (e.key === 'Enter') setRadius(); });
   $('switch').addEventListener('change', function () { location.search = '?d=' + encodeURIComponent(this.value); });
   setInterval(tick, 1000);
 

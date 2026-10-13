@@ -326,10 +326,41 @@ def update(name, patch):
     return save(apply_patch(cfg, patch))
 
 
+def current_system(where=None):
+    """The commander's system from the journal, or (None, reason)."""
+    if where is None:
+        from ..journal import context
+        where = context.where_am_i
+    try:
+        data = where()
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and "error" not in data and data.get("system"):
+        return data["system"], None
+    return None, (data.get("error") if isinstance(data, dict) else None) or "the journal names no system"
+
+
+def pin_origin(cfg, where=None):
+    """A new dashboard whose origin is "current" is anchored to the system the commander is in right now.
+    Returns (config, note); the note says why it stayed "current" when the journal could not be read."""
+    if not isinstance(cfg, dict) or str(cfg.get("origin", DEFAULT_CONFIG["origin"])).strip().lower() != "current":
+        return cfg, None
+    system, reason = current_system(where)
+    if system is None:
+        return cfg, f"origin stays \"current\" (follows your position) because the journal could not be read: {reason}"
+    return {**cfg, "origin": system}, None
+
+
+def save_new(cfg, where=None):
+    """Create or replace a dashboard, anchoring an origin of "current". Returns (stored config, note)."""
+    cfg, note = pin_origin(cfg, where)
+    return save(cfg), note
+
+
 def ensure_default():
     """Create the default `recce` dashboard when no dashboards exist yet."""
     if not list_names():
-        save(DEFAULT_CONFIG)
+        save_new(DEFAULT_CONFIG)
 
 
 def default_name():

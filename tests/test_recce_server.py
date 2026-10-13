@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import timedelta
 from unittest import mock
 
 from eddn_helper.recce import config as rcfg
@@ -17,8 +18,9 @@ from eddn_helper.recce.core import CoreError
 
 class FakeCore:
     def __init__(self):
-        self.stamp = "2026-10-13T10:00:00Z"
+        self.stamp = server.iso(server.now_utc())
         self.snapshots = 0
+        self.position = "Sol"
         self.fail = None
         self.block = None
 
@@ -27,6 +29,16 @@ class FakeCore:
 
     def resolve_origin(self, cfg):
         return "Hub", "config"
+
+    def current_system(self):
+        return self.position
+
+    def recentre(self, name):
+        if self.position is None:
+            raise CoreError("cannot recentre: your current position is unknown (no journal)")
+        previous = rcfg.load(name)["origin"]
+        rcfg.update(name, {"origin": self.position})
+        return {"name": name, "origin": self.position, "previous": previous}
 
     def snapshot(self, cfg):
         if self.block is not None:
@@ -59,7 +71,8 @@ class ServerCase(unittest.TestCase):
         env = mock.patch.dict(os.environ, {rcfg.ENV_DIR: self.tmp.name})
         env.start()
         self.addCleanup(env.stop)
-        rcfg.ensure_default()
+        with mock.patch("eddn_helper.journal.context.where_am_i", return_value={"error": "no journal"}):
+            rcfg.ensure_default()                       # unreadable journal: the default keeps following ("current")
         self.fake = FakeCore()
         self.srv = server.RecceServer(0, self.fake, poll_seconds=0.05)
         self.thread = threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -169,7 +182,7 @@ class SseTests(ServerCase):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
         conn.request("GET", "/events?d=recce")
         resp = conn.getresponse()
-        self.fake.stamp = "2026-10-13T10:05:00Z"
+        self.fake.stamp = server.iso(server.now_utc() + timedelta(seconds=30))
         found = None
         end = time.monotonic() + 6
         name = None
@@ -193,7 +206,7 @@ class RefreshTimingTests(ServerCase):
         r.gate.set_interval(1.5)
         time.sleep(0.5)
         self.assertEqual(self.fake.snapshots, 1)                       # unchanged database: nothing re-run
-        self.fake.stamp = "2026-10-13T10:09:00Z"
+        self.fake.stamp = server.iso(server.now_utc() + timedelta(seconds=60))
         time.sleep(0.6)
         self.assertEqual(self.fake.snapshots, 1)                       # moved, but the interval has not passed
         self.assertTrue(wait_for(lambda: r.gate.last_at != first))
@@ -266,6 +279,68 @@ class ResilienceTests(ServerCase):
         self.assertTrue(wait_for(lambda: "no longer exists" in (self.json("/api/data?d=recce")[1]["status"]["error"]
                                                                   if self.get("/api/data?d=recce")[0] == 200 else "")
                                  or self.get("/api/data?d=recce")[0] == 404))
+
+
+class RecentreTests(ServerCase):
+    def post(self, path, headers=None):
+        return self.get(path, method="POST", headers=headers)
+
+    def test_post_needs_the_header(self):
+        self.assertEqual(self.post("/api/recentre?d=recce")[0], 404)
+        self.assertEqual(rcfg.load("recce")["origin"], "current")
+
+    def test_recentre_anchors_and_open_pages_get_the_new_config(self):
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.json("/api/data?d=recce")[1]["status"]["current_system"], "Sol")
+        code, _, body = self.post("/api/recentre?d=recce", {"X-Recce": "1"})
+        self.assertEqual((code, json.loads(body)["origin"]), (200, "Sol"))
+        self.assertEqual(rcfg.load("recce")["origin"], "Sol")
+        self.assertTrue(wait_for(lambda: self.json("/api/config?d=recce")[1]["config"]["origin"] == "Sol"))
+
+    def test_unknown_position_and_unknown_dashboard(self):
+        self.fake.position = None
+        code, _, body = self.post("/api/recentre?d=recce", {"X-Recce": "1"})
+        self.assertEqual(code, 409)
+        self.assertIn("unknown", json.loads(body)["error"])
+        self.assertEqual(self.post("/api/recentre?d=nope", {"X-Recce": "1"})[0], 404)
+
+    def test_anchored_dashboard_ignores_moves_but_the_button_label_learns_them(self):
+        rcfg.update("recce", {"origin": "Hub"})
+        self.assertTrue(self.loaded())
+        self.runner().gate.set_interval(0.1)
+        n = self.fake.snapshots
+        self.fake.position = "Achenar"
+        self.runner()._origin_checked = 0.0                              # force the next position check
+        self.assertTrue(wait_for(lambda: self.json("/api/data?d=recce")[1]["status"]["current_system"] == "Achenar"))
+        time.sleep(0.5)
+        self.assertEqual(self.fake.snapshots, n)                         # anchored: moving does not re-query
+
+    def test_following_dashboard_requeries_when_you_move(self):
+        self.assertTrue(self.loaded())                                   # default test config still follows
+        self.runner().gate.set_interval(0.1)
+        n = self.fake.snapshots
+        self.fake.position = "Achenar"
+        self.runner()._origin_checked = 0.0
+        self.assertTrue(wait_for(lambda: self.fake.snapshots > n))
+
+
+class RadiusTests(ServerCase):
+    def post(self, q, headers=None):
+        code, _, body = self.get("/api/radius?d=recce" + q, method="POST", headers=headers)
+        return code, json.loads(body)
+
+    def test_radius_is_set_validated_and_pushed(self):
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.post("&ly=60")[0], 404)                                  # header required
+        self.assertEqual(self.post("&ly=60", {"X-Recce": "1"}), (200, {"name": "recce", "radius_ly": 60}))
+        self.assertEqual(rcfg.load("recce")["radius_ly"], 60)
+        self.assertTrue(wait_for(lambda: self.json("/api/config?d=recce")[1]["config"]["radius_ly"] == 60))
+        self.assertEqual(self.post("&ly=37.5", {"X-Recce": "1"})[1]["radius_ly"], 37.5)
+        code, body = self.post("&ly=0", {"X-Recce": "1"})
+        self.assertEqual(code, 400)
+        self.assertIn("radius_ly: must be at least 1", body["error"])
+        self.assertEqual(self.post("&ly=abc", {"X-Recce": "1"})[0], 400)
+        self.assertEqual(rcfg.load("recce")["radius_ly"], 37.5)                        # bad values changed nothing
 
 
 class SingletonTests(ServerCase):

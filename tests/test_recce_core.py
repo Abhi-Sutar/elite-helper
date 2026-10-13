@@ -149,6 +149,46 @@ class SelectionTests(CoreCase):
         self.assertIn("newest_market_update", stamps)
 
 
+class RecentreTests(CoreCase):
+    def setUp(self):
+        super().setUp()
+        self.put(1, "Near Hub", [(3, pending("P1"))], pos=(10, 0, 0))
+        self.put(2, "Far Away", [(3, pending("P2"))], pos=(5000, 0, 0))
+        self.put(3, "Far Hub", [(3, plain("FH"))], pos=(5000, 5, 0), economy="Industrial")
+        self.players({"P1": True, "P2": True})
+        self.pos = {"system": "Far Hub"}
+        self.c = core.Core(lambda: self.factory, writer=lambda: None, where=lambda: self.pos)
+        self.name = self.cfg["name"]
+        rcfg.save(dict(self.cfg, origin="Hub"))
+
+    def systems(self):
+        return [r["system"] for r in self.c.snapshot(rcfg.load(self.name), now=NOW)["rows"]]
+
+    def test_recentre_writes_the_origin_and_the_snapshot_follows(self):
+        self.assertEqual(self.systems(), ["Near Hub"])
+        res = self.c.recentre(self.name)
+        self.assertEqual(res, {"name": self.name, "origin": "Far Hub", "previous": "Hub"})
+        self.assertEqual(self.systems(), ["Far Away"])
+
+    def test_unknown_position_changes_nothing(self):
+        self.pos.clear()
+        self.pos["error"] = "journal gone"
+        with self.assertRaises(core.CoreError) as cm:
+            self.c.recentre(self.name)
+        self.assertIn("journal gone", str(cm.exception))
+        self.assertEqual(rcfg.load(self.name)["origin"], "Hub")
+
+    def test_already_there_is_a_no_op(self):
+        self.pos["system"] = "Hub"
+        stamp = rcfg.stamp(self.name)
+        self.assertEqual(self.c.recentre(self.name)["previous"], "Hub")
+        self.assertEqual(rcfg.stamp(self.name), stamp)                   # file untouched, so no pointless reload
+
+    def test_anchored_snapshot_ignores_where_you_are(self):
+        self.pos["system"] = "Far Hub"
+        self.assertEqual(self.systems(), ["Near Hub"])                   # still centred on Hub
+
+
 class RowFlagTests(CoreCase):
     def test_pending_run_text_in_rows(self):
         self.put(1, "Range", [(50, plain("P1")), (30, pending("P1")), (10, pending("P1", 0.61))])

@@ -397,6 +397,7 @@ Nothing to install beyond the normal `uv sync`. `scripts\elite-dash.cmd` calls t
 scripts\elite-dash open                     # start the server if needed, open the default dashboard in the browser
 scripts\elite-dash open close-in            # open another dashboard
 scripts\elite-dash serve --port 8780        # run the server in the foreground instead
+scripts\elite-dash recentre                 # anchor the default dashboard on the system you are in now
 scripts\elite-dash list                     # names, titles and URLs (server not started by this)
 scripts\elite-dash show recce --data        # config, plus one query run printed as JSON
 scripts\elite-dash new close-in --origin "Praea Euq YE-Y b1-3" --radius 40 --economy Agriculture --min-pop 1000000 --state-in pending --refresh 20
@@ -411,13 +412,14 @@ ignored). Ctrl+C stops a foreground server cleanly. `python -m eddn_helper.recce
 
 ### Claude / MCP
 
-The MCP server gets five tools. Each result carries the dashboard URL.
+The MCP server gets six tools. Each result carries the dashboard URL.
 
 | Tool | What it does |
 |---|---|
 | `dashboard_create(config)` | create or replace; starts the server if needed, returns `name` and `url` |
 | `dashboard_update(name, patch)` | merge changes; open browsers live-reload |
 | `dashboard_list()` | names, URLs, whether the server runs (read-only, starts nothing) |
+| `dashboard_recentre(name)` | anchor it on your current system (from the journal) |
 | `dashboard_open(name)` | start the server if needed and open the browser |
 | `dashboard_delete(name)` | remove the config |
 
@@ -443,7 +445,12 @@ folder). Missing keys take the defaults below; errors name the field (`refresh_s
 }
 ```
 
-- `origin`: a system name, or `"current"` to use `where_am_i` (the last known position if the journal is quiet).
+- `origin`: a system name (the dashboard is **anchored** there) or `"current"` (it **follows** your position via
+  `where_am_i`, last known position if the journal is quiet). A new dashboard created with origin `"current"` (the
+  default, `elite-dash new` without `--origin`, `dashboard_create`) is anchored on the system you are in at that
+  moment, so it stays put as you jump around. The page shows a "Recentre on <system>" button to move the anchor to
+  where you are now (also `elite-dash recentre [name]` and the `dashboard_recentre` tool). To follow your position
+  live instead, set the origin to `current` with `edit --set origin=current` or `dashboard_update`.
 - `state_in`: `any`, `pending`, `active` or `recovering`. With `any`, `kinds` picks which of `pending`, `active`,
   `recovering`, `other` are shown.
 - `columns` (ordered): `system`, `faction`, `economy`, `pending_for`, `state`, `last_update`, `distance`,
