@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from . import database, live, migrate, queries
 from .journal import context as journal_context
@@ -11,6 +12,7 @@ from .journal import income as journal_income
 from .journal import ingest as journal_ingest
 from .journal import queries as journal_queries
 from .journal import views as journal_views
+from .recce import tools as recce_tools
 
 mcp = MCPServer(
     "elite-helper",
@@ -467,6 +469,53 @@ def journal_sync_status() -> dict:
     on demand, so this is only for diagnosing.
     """
     return _run(journal_ingest.journal_status, None)
+
+
+# ---- Recce dashboards: a local web page that refreshes by itself (see README, "Recce dashboard") ----------------------
+
+@mcp.tool()
+def dashboard_create(config: dict) -> dict:
+    """
+    Create or replace a Recce dashboard and return its name and URL (the local server is started if needed and
+    reused if already running). config keys, all optional except name: name (lowercase slug), title, refresh_seconds
+    (min 5, default 20), origin (a system name or "current" for the journal position), radius_ly, filters {economy
+    (name, list, or null), min_population, controlling_only, player_faction_only, faction_state (e.g. "Expansion"),
+    state_in (any|pending|active|recovering), kinds (with state_in "any": which of pending, active, recovering, other
+    to show)}, columns (ordered from: system, faction, economy, pending_for, state, last_update, distance, population,
+    influence), sort {by: state|pending_for|system|faction|distance|population|influence|last_update, order:
+    asc|desc}, highlight_rules [{when: active_for_under_hours|pending_for_over_hours, hours}], live_fetch {enabled,
+    max_requests (at most 10 EDSM requests per refresh)}, stale_after_minutes. Missing keys take the defaults, which
+    are the Agriculture / Expansion pending-or-active dashboard named "recce". Invalid configs come back as an error
+    listing every problem.
+    """
+    return recce_tools.create(config)
+
+
+@mcp.tool()
+def dashboard_update(name: str, patch: dict) -> dict:
+    """
+    Merge changes into an existing dashboard (objects merge key by key, lists are replaced, null clears an optional
+    filter) and return its URL. Browsers that have the dashboard open reload it live.
+    """
+    return recce_tools.update(name, patch)
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+def dashboard_list() -> dict:
+    """List dashboards with their URLs and whether the local Recce server is running. Does not start anything."""
+    return recce_tools.list_dashboards()
+
+
+@mcp.tool()
+def dashboard_open(name: str) -> dict:
+    """Start the local Recce server if it is not running (reuse it if it is), open the dashboard in the browser, and return its URL."""
+    return recce_tools.open_dashboard(name)
+
+
+@mcp.tool()
+def dashboard_delete(name: str) -> dict:
+    """Delete a dashboard's saved config. Open browsers show that it no longer exists."""
+    return recce_tools.delete(name)
 
 
 def main():

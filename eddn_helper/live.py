@@ -9,13 +9,13 @@ READ_ONLY_MSG = "database connection is read-only (or write failed); live lookup
 _writer_engines = {}
 
 
-def writer_session():
+def writer_session(url=None):
     """
     A session on the writer database named by ELITE_HELPER_INGEST_DATABASE_URL, for EDSM fetches made from the MCP
     server (whose normal connection is the read-only reader role); None when that variable is not set.
-    The caller closes it.
+    The caller closes it. `url` overrides the variable (Recce passes the one from its settings file).
     """
-    url = config.ingest_database_url()
+    url = config.ingest_database_url() or url
     if not url:
         return None
     if url not in _writer_engines:

@@ -11,5 +11,8 @@ dependencies = [
     "psycopg[binary]>=3.1",
 ]
 
+[project.scripts]
+elite-dash = "eddn_helper.recce.cli:main"
+
 [tool.uv]
 package = false
