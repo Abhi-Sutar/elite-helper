@@ -1,0 +1,4 @@
+# libpq password file (no passwords in URLs, tasks or config). scripts\create-pgpass.ps1 writes the real one to
+# %LOCALAPPDATA%\elite-helper\pgpass.conf; this only shows the format: host:port:database:user:password
+localhost:5432:elite:elite_reader:CHANGE_ME
+localhost:5432:elite:elite_writer:CHANGE_ME

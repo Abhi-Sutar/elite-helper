@@ -202,9 +202,11 @@ class Core:
         if system is None:
             raise CoreError("cannot recentre: your current position is unknown (" + reason + ")")
         self._last_current = system
-        previous = rcfg.load(name)["origin"]
+        from . import kinds
+        kind = kinds.for_cfg(rcfg.load(name))
+        previous = kind.origin(rcfg.load(name))
         if previous != system:
-            rcfg.update(name, {"origin": system})
+            rcfg.update(name, kind.origin_patch(system))
         return {"name": name, "origin": system, "previous": previous}
 
     # -- the full snapshot

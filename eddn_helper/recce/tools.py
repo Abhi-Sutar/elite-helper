@@ -3,6 +3,7 @@
 import webbrowser
 
 from . import config as rcfg
+from . import kinds
 from . import server
 
 
@@ -49,12 +50,12 @@ def list_dashboards():
     items = []
     for n in rcfg.list_names():
         try:
-            title = rcfg.load(n)["title"]
-            err = None
+            cfg = rcfg.load(n)
+            title, kind, err = cfg["title"], kinds.for_cfg(cfg), None
         except (rcfg.ConfigError, KeyError) as e:
-            title, err = None, _fail(e)["error"]
-        origin = None if err else rcfg.load(n)["origin"]
-        items.append({"name": n, "title": title, "origin": origin,
+            title, kind, err = None, None, _fail(e)["error"]
+        origin = None if err else kind.origin(cfg)
+        items.append({"name": n, "kind": rcfg.kind_of(n), "title": title, "origin": origin,
                       "origin_mode": None if origin is None else ("following you" if origin.lower() == "current"
                                                                    else "anchored"),
                       "url": server.dashboard_url(base, n) if base else None,
