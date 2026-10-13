@@ -88,6 +88,22 @@ td.num, .num { font-family: var(--font-num); font-variant-numeric: tabular-nums;
 .chip.active { color: var(--good); background: var(--good-soft); border-color: transparent; }
 .chip.war, .chip.stale { color: var(--crit); background: var(--crit-soft); border-color: transparent; }
 .chip.changed { color: var(--accent); border-color: var(--accent); }
+.chip.likely { color: var(--good); background: var(--good-soft); border-color: transparent; }
+.chip.possible, .chip.uncertain { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.chip.unlikely { color: var(--crit); background: var(--crit-soft); border-color: transparent; }
+tr[data-exp] { cursor: pointer; }
+tr[data-exp]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.caret { display: inline-block; color: var(--muted); margin-left: 4px; font-size: 0.7rem; }
+tr.detail td { background: var(--tint); padding: 12px 14px 14px; cursor: default; }
+.why { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; max-width: 90ch; }
+.why li { display: grid; grid-template-columns: 4.5em 1fr; gap: 10px; line-height: 1.4; }
+.why .res { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding-top: 2px; }
+.res.pass { color: var(--good); } .res.fail { color: var(--crit); } .res.unknown { color: var(--warn); } .res.info { color: var(--muted); }
+.why .t { font-weight: 600; }
+.why .conf { color: var(--muted); font-size: 0.72rem; margin-left: 6px; }
+.why .d, .whyfoot { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+.whyhead { font-weight: 600; margin-bottom: 8px; }
+.whyfoot { margin-top: 10px; max-width: 90ch; }
 .empty { padding: 28px 14px; color: var(--muted); text-align: center; line-height: 1.5; }
 footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85ch; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
@@ -136,7 +152,7 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
 (function () {
   'use strict';
   var NAME = new URLSearchParams(location.search).get('d');
-  var S = { cfg: null, labels: {}, dashboards: [], data: null, status: null, connected: false, sig: {}, changed: {}, loaded: false };
+  var S = { cfg: null, labels: {}, dashboards: [], data: null, status: null, connected: false, sig: {}, changed: {}, loaded: false, open: {} };
   var $ = function (id) { return document.getElementById(id); };
 
   function esc(t) {
@@ -230,6 +246,13 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
         if (r.war) chips.push('<span class="chip war">War in system</span>');
         if (S.changed[r.key] && now - S.changed[r.key] < 300000) chips.push('<span class="chip changed">changed</span>');
         return '<td><div class="chips">' + chips.join('') + '</div><div class="meta">Main state: ' + esc(r.main_state || 'None') + '</div></td>';
+      case 'expansion_chance':
+        var x = r.expansion;
+        if (!x) return '<td><span class="meta">' + (r.kind === 'pending' ? 'not estimated' : 'n/a') + '</span></td>';
+        if (x.error) return '<td><span class="meta">Estimate failed</span></td>';
+        var lab = String(x.label || '').toLowerCase();
+        return '<td><span class="chip ' + esc(lab) + '">' + esc(x.label) + ' ' + Math.round(x.probability * 100) + '%</span>' +
+               '<span class="caret" aria-hidden="true">' + (S.open[r.key] ? '▲' : '▼') + '</span></td>';
       case 'last_update':
         return '<td class="num age" data-last="' + i + '"></td>';
       case 'distance':
@@ -240,6 +263,22 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
         return '<td class="num">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '%' : '') + '</td>';
     }
     return '<td></td>';
+  }
+
+  function detailRow(r, ncols) {
+    var x = r.expansion, items = (x.rules || []).map(function (u) {
+      return '<li><span class="res ' + esc(u.result) + '">' + esc(u.result) + '</span><div><span class="t">' + esc(u.title) +
+             '</span><span class="conf">' + esc(u.confidence) + '</span><div class="d">' + esc(u.detail) + '</div></div></li>';
+    }).join('');
+    return '<tr class="detail" data-detail="' + esc(r.key) + '"><td colspan="' + ncols + '"><div class="whyhead">' + esc(x.label) + ', about ' +
+           Math.round(x.probability * 100) + '% for ' + esc(r.faction) + ' in ' + esc(r.system) + '</div><ul class="why">' + items +
+           '</ul><div class="whyfoot">' + esc(x.disclaimer) + ' Rules version ' + esc(x.ruleset_version) + '.</div></td></tr>';
+  }
+  function toggleRow(tr) {
+    var r = ((S.data && S.data.rows) || [])[+tr.getAttribute('data-row')];
+    if (!r || !r.expansion || r.expansion.error) return;
+    if (S.open[r.key]) delete S.open[r.key]; else S.open[r.key] = true;
+    render();
   }
 
   function render() {
@@ -259,7 +298,10 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     });
     if (S.data) S.loaded = true;
     $('rows').innerHTML = rows.length ? rows.map(function (r, i) {
-      return '<tr data-row="' + i + '">' + cols.map(function (c) { return cell(c, r, i, now); }).join('') + '</tr>';
+      var exp = r.expansion && !r.expansion.error;
+      return '<tr data-row="' + i + '"' + (exp ? ' data-exp tabindex="0" aria-expanded="' + !!S.open[r.key] + '"' : '') + '>' +
+             cols.map(function (c) { return cell(c, r, i, now); }).join('') + '</tr>' +
+             (exp && S.open[r.key] ? detailRow(r, cols.length) : '');
     }).join('') : '<tr><td class="empty" colspan="' + cols.length + '">' + esc(emptyText()) + '</td></tr>';
     renderStatus();
     tick();
@@ -409,6 +451,15 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
   $('playeronly').addEventListener('change', setPlayerOnly);
   $('radius').addEventListener('keydown', function (e) { if (e.key === 'Enter') setRadius(); });
   $('switch').addEventListener('change', function () { location.search = '?d=' + encodeURIComponent(this.value); });
+  $('rows').addEventListener('click', function (e) {
+    var tr = e.target.closest ? e.target.closest('tr[data-exp]') : null;
+    if (tr) toggleRow(tr);
+  });
+  $('rows').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var tr = e.target.matches && e.target.matches('tr[data-exp]') ? e.target : null;
+    if (tr) { e.preventDefault(); toggleRow(tr); var k = tr.getAttribute('data-row'); var n = document.querySelector('tr[data-row="' + k + '"]'); if (n) n.focus(); }
+  });
   setInterval(tick, 1000);
 
   if (!NAME) { location.replace('/'); return; }
