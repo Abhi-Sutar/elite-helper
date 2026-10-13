@@ -97,8 +97,9 @@ def cmd_new(args):
         cfg["filters"]["state_in"] = args.state_in
     if args.refresh is not None:
         cfg["refresh_seconds"] = args.refresh
-    saved = rcfg.save(cfg)
+    saved, note = rcfg.save_new(cfg)
     print(f"Saved dashboard {saved['name']!r} in {rcfg.path_for(saved['name'])}")
+    print(f"Anchored on {saved['origin']}." if saved["origin"].lower() != "current" else (note or ""))
     print(f"Open it with: elite-dash open {saved['name']}")
     return 0
 
@@ -113,6 +114,20 @@ def cmd_edit(args):
         cfg = rcfg.set_path(cfg, key.strip(), rcfg.parse_value(value))
     saved = rcfg.save(cfg)
     print(f"Updated dashboard {saved['name']!r}; open browsers reload it by themselves.")
+    return 0
+
+
+def cmd_recentre(args):
+    from .core import Core, CoreError
+    _need(args.name)
+    try:
+        res = Core(None).recentre(args.name)
+    except CoreError as e:
+        return _err(str(e))
+    if res["previous"] == res["origin"]:
+        print(f"{args.name!r} is already anchored on {res['origin']}.")
+    else:
+        print(f"{args.name!r} recentred on {res['origin']} (was {res['previous']}); open browsers update by themselves.")
     return 0
 
 
@@ -141,6 +156,10 @@ def build_parser():
     s.add_argument("name")
     s.add_argument("--data", action="store_true")
     s.set_defaults(func=cmd_show)
+
+    s = sub.add_parser("recentre", help="anchor a dashboard on the system you are in now")
+    s.add_argument("name", nargs="?", default=rcfg.DEFAULT_NAME)
+    s.set_defaults(func=cmd_recentre)
 
     s = sub.add_parser("delete", help="delete a dashboard")
     s.add_argument("name")

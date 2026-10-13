@@ -513,6 +513,16 @@ def dashboard_open(name: str) -> dict:
 
 
 @mcp.tool()
+def dashboard_recentre(name: str) -> dict:
+    """
+    Anchor a dashboard on the commander's current system (from the journal) and return its URL, the new origin and the
+    previous one. Dashboards stay anchored to the system they were created around; use this to move them. Open
+    browsers update by themselves.
+    """
+    return recce_tools.recentre(name)
+
+
+@mcp.tool()
 def dashboard_delete(name: str) -> dict:
     """Delete a dashboard's saved config. Open browsers show that it no longer exists."""
     return recce_tools.delete(name)

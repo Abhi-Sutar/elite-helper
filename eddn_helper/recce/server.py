@@ -87,6 +87,7 @@ class Runner:
         self.last_attempt_at = None
         self.db_newest = None
         self.last_access = time.monotonic()
+        self.current_system = None
         self._origin_token = None
         self._origin_checked = 0.0
         self.thread = threading.Thread(target=self._loop, name=f"recce-poll-{name}", daemon=True)
@@ -129,6 +130,7 @@ class Runner:
         return {"state": state, "error": self.error, "refresh_seconds": refresh,
                 "last_check_at": iso(self.last_check_at), "last_refresh_at": iso(self.last_refresh_at),
                 "last_attempt_at": iso(self.last_attempt_at), "db_newest_faction_update": self.db_newest,
+                "current_system": self.current_system,
                 "server_time": iso(now)}
 
     def data_payload(self):
@@ -147,7 +149,7 @@ class Runner:
 
     def _publish_status(self):
         s = self.status_payload()
-        key = (s["state"], s["error"], s["db_newest_faction_update"])
+        key = (s["state"], s["error"], s["db_newest_faction_update"], s["current_system"])
         if key != self._status_key:
             self._status_key = key
             with self.cond:
@@ -220,12 +222,14 @@ class Runner:
         self._clear("check")
         self.last_check_at = now_utc()
         self.db_newest = stamps["newest_faction_update"]
-        if self.cfg["origin"].strip().lower() == "current" and mono - self._origin_checked >= ORIGIN_RECHECK_S:
+        if mono - self._origin_checked >= ORIGIN_RECHECK_S:
             self._origin_checked = mono
             try:
-                self._origin_token = self._call(self.core.resolve_origin, self.cfg)[0]
+                self.current_system = self._call(self.core.current_system)
             except Exception:
-                pass                                        # the snapshot reports a missing position
+                pass                                        # keep the last known one; the snapshot reports problems
+        follow = self.cfg["origin"].strip().lower() == "current"
+        self._origin_token = self.current_system if follow else None       # an anchored dashboard never moves
         token = (stamps["newest_faction_update"], self._origin_token)
         if changed_cfg or self.gate.should_refresh(token, mono):
             future = self.pool.submit(self.core.snapshot, self.cfg)
@@ -369,6 +373,31 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
+        if urlparse(self.path).path == "/api/radius" and self.headers.get("X-Recce") == "1":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("d") or [None])[0]
+            if not name or not rcfg.exists(name):
+                return self._send(404, {"error": f"no dashboard named {name!r}" if name else "add ?d=<dashboard>"})
+            try:
+                ly = float((q.get("ly") or [""])[0])
+            except ValueError:
+                return self._send(400, {"error": "radius_ly: must be a number"})
+            try:
+                cfg = rcfg.update(name, {"radius_ly": int(ly) if ly.is_integer() else ly})
+            except rcfg.ConfigError as e:
+                return self._send(400, {"error": "; ".join(e.errors)})
+            return self._send(200, {"name": name, "radius_ly": cfg["radius_ly"]})
+        if urlparse(self.path).path == "/api/recentre" and self.headers.get("X-Recce") == "1":
+            name = (parse_qs(urlparse(self.path).query).get("d") or [None])[0]
+            runner = self.server.manager.get(name) if name else None
+            if runner is None:
+                return self._send(404, {"error": f"no dashboard named {name!r}" if name else "add ?d=<dashboard>"})
+            try:
+                return self._send(200, runner._call(self.server.manager.core.recentre, name))
+            except (CoreError, rcfg.ConfigError, KeyError) as e:
+                return self._send(409, {"error": str(e.args[0]) if isinstance(e, KeyError) else str(e)})
+            except FutureTimeout:
+                return self._send(504, {"error": "timed out reading the journal"})
         return self._send(404, {"error": "not found"})
 
     def _events(self, runner):

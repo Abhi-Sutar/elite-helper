@@ -105,6 +105,9 @@ class StoreTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {rcfg.ENV_DIR: self.tmp.name})
         env.start()
         self.addCleanup(env.stop)
+        journal = mock.patch("eddn_helper.journal.context.where_am_i", return_value={"error": "no journal"})
+        journal.start()                                                  # never read the real journal in tests
+        self.addCleanup(journal.stop)
 
     def test_save_load_list_delete(self):
         self.assertEqual(rcfg.list_names(), [])
@@ -137,6 +140,33 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(rcfg.ConfigError) as cm:
             rcfg.load("broken")
         self.assertIn("not valid JSON", str(cm.exception))
+
+
+class AnchorTests(StoreTests):
+    def test_new_dashboard_is_anchored_on_the_current_system(self):
+        cfg, note = rcfg.save_new({"name": "a"}, where=lambda: {"system": "Sol"})
+        self.assertEqual((cfg["origin"], note), ("Sol", None))
+        self.assertEqual(rcfg.load("a")["origin"], "Sol")
+        cfg, _ = rcfg.save_new(dict(rcfg.DEFAULT_CONFIG, name="b"), where=lambda: {"system": "Achenar"})
+        self.assertEqual(cfg["origin"], "Achenar")
+
+    def test_unreadable_journal_keeps_following_with_a_note(self):
+        cfg, note = rcfg.save_new({"name": "a"}, where=lambda: {"error": "no journal files"})
+        self.assertEqual(cfg["origin"], "current")
+        self.assertIn("no journal files", note)
+        cfg, note = rcfg.save_new({"name": "b"}, where=lambda: 1 / 0)
+        self.assertEqual(cfg["origin"], "current")
+        self.assertIn("ZeroDivisionError", note)
+
+    def test_explicit_origin_is_never_changed_and_update_does_not_pin(self):
+        cfg, note = rcfg.save_new({"name": "a", "origin": "Hub"}, where=lambda: {"system": "Sol"})
+        self.assertEqual((cfg["origin"], note), ("Hub", None))
+        self.assertEqual(rcfg.update("a", {"origin": "current"})["origin"], "current")    # explicit follow mode
+
+    def test_default_dashboard_is_anchored_when_created(self):
+        with mock.patch("eddn_helper.journal.context.where_am_i", return_value={"system": "Colonia"}):
+            rcfg.ensure_default()
+        self.assertEqual(rcfg.load("recce")["origin"], "Colonia")
 
 
 class SettingsTests(StoreTests):

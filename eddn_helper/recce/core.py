@@ -187,6 +187,25 @@ class Core:
         raise CoreError("cannot work out your current position: " + (reason or "the journal names no system")
                         + ". Set a system name as origin to avoid this.")
 
+    def current_system(self):
+        """The journal position (None when unreadable); remembered as the last known one."""
+        system, _ = rcfg.current_system(self.where)
+        if system:
+            self._last_current = system
+        return system
+
+    def recentre(self, name):
+        """Anchor a dashboard on the commander's current system. The config watcher pushes the change to open pages.
+        Returns {"name", "origin", "previous"}; raises CoreError (nothing changed) when the position is unknown."""
+        system, reason = rcfg.current_system(self.where)
+        if system is None:
+            raise CoreError("cannot recentre: your current position is unknown (" + reason + ")")
+        self._last_current = system
+        previous = rcfg.load(name)["origin"]
+        if previous != system:
+            rcfg.update(name, {"origin": system})
+        return {"name": name, "origin": system, "previous": previous}
+
     # -- the full snapshot
     def snapshot(self, cfg, now=None):
         now = now or datetime.now(timezone.utc)
