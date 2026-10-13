@@ -160,11 +160,22 @@ def ls_lookup(cache, system, station, budget, enabled):
 
 
 # --------------------------------------------------------------- refresh
+def apply_target_change(baselines, system):
+    """Baselines only mean something for one target. They remember which system they were measured around under
+    "_target"; when the target moves they restart from scratch. A file without the marker is just stamped."""
+    prev = baselines.get("_target")
+    if prev is not None and prev.lower() != system.lower():
+        log("baselines reset: target moved from %s to %s" % (prev, system))
+        baselines = {}
+    baselines["_target"] = system
+    return baselines
+
+
 def refresh(cfg):
     now = datetime.now(timezone.utc)
     h = helper(cfg)
     queries = h["queries"]
-    baselines = load_json(BASELINE_FILE, {})
+    baselines = apply_target_change(load_json(BASELINE_FILE, {}), cfg["target"]["system"])
     ls_cache = load_json(LS_CACHE_FILE, {})
     budget = [6]
     laden = float(cfg["ship"]["laden_ly"])
@@ -245,9 +256,23 @@ def refresh(cfg):
     return out
 
 
-def refresh_loop(cfg, stop):
+def refresh_loop(cfg, stop, config_path=None):
+    """Refresh forever. config_path is re-read every cycle so a changed target (or tab) applies without a restart;
+    a broken file keeps the previous settings. port, database_url and helper_dir still need a restart."""
     first = True
+    bad_config = False
     while not stop.is_set():
+        if config_path:
+            try:
+                new = load_config(config_path)
+                if new["target"]["system"] != cfg["target"]["system"]:
+                    log("target changed: %s -> %s" % (cfg["target"]["system"], new["target"]["system"]))
+                new["port"] = cfg["port"]
+                cfg, bad_config = new, False
+            except SystemExit as e:  # load_config exits on an unreadable file; keep running on the last good one
+                if not bad_config:
+                    log("config reload failed, keeping previous settings: %s" % e)
+                bad_config = True
         try:
             out = refresh(cfg)
             if first:
@@ -316,7 +341,7 @@ def main():
         return
 
     stop = threading.Event()
-    threading.Thread(target=refresh_loop, args=(cfg, stop), daemon=True).start()
+    threading.Thread(target=refresh_loop, args=(cfg, stop, args.config), daemon=True).start()
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", int(cfg["port"])), Handler)
     except OSError as e:
