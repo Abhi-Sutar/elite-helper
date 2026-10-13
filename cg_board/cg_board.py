@@ -120,28 +120,42 @@ def helper(cfg):
 
 
 def large_pad_stations(h, session, types):
-    """{(station, system) lowercase} for non-carrier markets whose station type is in `types`."""
+    """({(station, system) lowercase} whose type is in `types`, {same} whose type is unknown), non-carrier markets.
+    EDDN market messages carry no station type, so many markets have none until something else reports it."""
     M = h["models"].Market
     q = h["select"](M.station, M.system_name).where(M.is_carrier.is_(False), M.station_type.in_(list(types)))
-    return {(a.lower(), b.lower()) for a, b in session.execute(q)}
+    known = {(a.lower(), b.lower()) for a, b in session.execute(q)}
+    q = h["select"](M.station, M.system_name).where(
+        M.is_carrier.is_(False), (M.station_type.is_(None)) | (M.station_type == ""))
+    return known, {(a.lower(), b.lower()) for a, b in session.execute(q)}
+
+
+def norm_type(t):
+    return "".join((t or "").split()).lower()
+
+
+def is_large(edsm_type, types):
+    """EDSM names ("Coriolis Starport", "Asteroid base") against the configured types ("Coriolis", "AsteroidBase")."""
+    n = norm_type(edsm_type)
+    return any(norm_type(t) in n for t in types)
 
 
 def iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# ------------------------------------------------- distance to arrival star
-def ls_lookup(cache, system, station, budget, enabled):
-    """Distance-to-star (Ls) is not in the local database, so ask EDSM once per
-    system and remember the answer in ls_cache.json."""
+# ------------------------------------------- EDSM: distance to star, station type
+def edsm_station(cache, system, station, budget, enabled, need_type=False):
+    """Distance-to-star (Ls) and station type are not reliably in the local database, so ask EDSM once per system and
+    remember the answers in ls_cache.json. Returns the cache entry ({"ls", "type"}) or None while unknown."""
     key = system + "|" + station
     hit = cache.get(key)
-    if hit and hit.get("ls") is not None:
-        return hit["ls"]
+    if hit and hit.get("ls") is not None and (not need_type or hit.get("type")):
+        return hit
     if not enabled or budget[0] <= 0:
-        return None
+        return hit
     if hit and time.time() - hit.get("tried", 0) < 3600:
-        return None
+        return hit
     budget[0] -= 1
     try:
         url = "https://www.edsm.net/api-system-v1/stations?systemName=" + urllib.parse.quote(system)
@@ -150,21 +164,32 @@ def ls_lookup(cache, system, station, budget, enabled):
             payload = json.load(r)
         for st in payload.get("stations", []) or []:
             d = st.get("distanceToArrival")
-            if d is not None:
-                cache[system + "|" + st["name"]] = {"ls": round(d)}
+            cache[system + "|" + st["name"]] = {"ls": round(d) if d is not None else None, "type": st.get("type")}
     except Exception as e:  # network trouble is fine, the column just stays blank
         log("EDSM lookup failed for %s: %s" % (system, e))
-    if key not in cache or cache[key].get("ls") is None:
-        cache[key] = {"ls": None, "tried": time.time()}
-    return cache[key]["ls"]
+    got = cache.get(key)
+    if got is None or (got.get("ls") is None and not got.get("type")):
+        cache[key] = {"ls": None, "type": None, "tried": time.time()}
+    return cache[key]
 
 
 # --------------------------------------------------------------- refresh
+def apply_target_change(baselines, system):
+    """Baselines only mean something for one target. They remember which system they were measured around under
+    "_target"; when the target moves they restart from scratch. A file without the marker is just stamped."""
+    prev = baselines.get("_target")
+    if prev is not None and prev.lower() != system.lower():
+        log("baselines reset: target moved from %s to %s" % (prev, system))
+        baselines = {}
+    baselines["_target"] = system
+    return baselines
+
+
 def refresh(cfg):
     now = datetime.now(timezone.utc)
     h = helper(cfg)
     queries = h["queries"]
-    baselines = load_json(BASELINE_FILE, {})
+    baselines = apply_target_change(load_json(BASELINE_FILE, {}), cfg["target"]["system"])
     ls_cache = load_json(LS_CACHE_FILE, {})
     budget = [6]
     laden = float(cfg["ship"]["laden_ly"])
@@ -184,7 +209,7 @@ def refresh(cfg):
             types = tuple(tab.get("station_types") or cfg["station_types"])
             if types not in types_cache:
                 types_cache[types] = large_pad_stations(h, session, types)
-            allowed = types_cache[types]
+            allowed, unknown_type = types_cache[types]
             min_stock = tab.get("min_stock", cfg["min_stock"])
             max_age = tab.get("max_age_hours", cfg["max_age_hours"])
             cg = tab.get("cg_price")
@@ -199,8 +224,17 @@ def refresh(cfg):
             rows = {}
             for r in res["results"]:
                 st, sysname = r["station"], r["system"]
-                if (st.lower(), sysname.lower()) not in allowed:
-                    continue
+                ident = (st.lower(), sysname.lower())
+                info, pad_unknown = None, False
+                if ident not in allowed:
+                    if ident not in unknown_type:
+                        continue
+                    info = edsm_station(ls_cache, sysname, st, budget, cfg["lookup_ls"], need_type=True)
+                    if info and info.get("type"):
+                        if not is_large(info["type"], types):
+                            continue
+                    else:
+                        pad_unknown = True  # EDSM has not answered yet: keep it, flagged, rather than hide it
                 price, stock = r["price"], r["amount"] or 0
                 if cg and price >= cg:
                     continue
@@ -212,7 +246,8 @@ def refresh(cfg):
                 rows[st] = {
                     "system": sysname,
                     "ly": r["distance_ly"],
-                    "ls": ls_lookup(ls_cache, sysname, st, budget, cfg["lookup_ls"]),
+                    "ls": (info or edsm_station(ls_cache, sysname, st, budget, cfg["lookup_ls"]) or {}).get("ls"),
+                    "pad_unknown": pad_unknown,
                     "stock": stock,
                     "price": price,
                     "age": round(r["age_hours"], 1),
@@ -245,9 +280,23 @@ def refresh(cfg):
     return out
 
 
-def refresh_loop(cfg, stop):
+def refresh_loop(cfg, stop, config_path=None):
+    """Refresh forever. config_path is re-read every cycle so a changed target (or tab) applies without a restart;
+    a broken file keeps the previous settings. port, database_url and helper_dir still need a restart."""
     first = True
+    bad_config = False
     while not stop.is_set():
+        if config_path:
+            try:
+                new = load_config(config_path)
+                if new["target"]["system"] != cfg["target"]["system"]:
+                    log("target changed: %s -> %s" % (cfg["target"]["system"], new["target"]["system"]))
+                new["port"] = cfg["port"]
+                cfg, bad_config = new, False
+            except SystemExit as e:  # load_config exits on an unreadable file; keep running on the last good one
+                if not bad_config:
+                    log("config reload failed, keeping previous settings: %s" % e)
+                bad_config = True
         try:
             out = refresh(cfg)
             if first:
@@ -316,7 +365,7 @@ def main():
         return
 
     stop = threading.Event()
-    threading.Thread(target=refresh_loop, args=(cfg, stop), daemon=True).start()
+    threading.Thread(target=refresh_loop, args=(cfg, stop, args.config), daemon=True).start()
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", int(cfg["port"])), Handler)
     except OSError as e:

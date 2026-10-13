@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from . import database, live, migrate, queries
+from . import cg_target, database, live, migrate, queries
 from .journal import context as journal_context
 from .journal import files as jfiles
 from .journal import income as journal_income
@@ -29,7 +29,8 @@ mcp = MCPServer(
         "rest of the journal tools (journal_search, travel_log, visited_*, ledger, cargo, materials, ships, missions, "
         "reputation, commander_stats, carrier_status, play_sessions) read the commander's history from the database, "
         "ingesting new journal lines on demand; every reply has journal_freshness - if db_behind_journal is true the "
-        "answer may be missing the latest play (see journal_sync_status)."))
+        "answer may be missing the latest play (see journal_sync_status). "
+        "cg_board_target / cg_board_set_target read and move the search location of the local CG supply board."))
 
 
 _engine = None
@@ -527,6 +528,26 @@ def dashboard_recentre(name: str) -> dict:
 def dashboard_delete(name: str) -> dict:
     """Delete a dashboard's saved config. Open browsers show that it no longer exists."""
     return recce_tools.delete(name)
+
+
+# ---- CG supply board: where it searches from (see cg_board/README.md) -------------------------------------------------
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+def cg_board_target() -> dict:
+    """The CG supply board's current search location (system and delivery station name), its refresh interval and its tabs."""
+    return cg_target.get_target()
+
+
+@mcp.tool()
+def cg_board_set_target(system: str, station: str | None = None) -> dict:
+    """
+    Move the CG supply board's search location. Stations are listed by distance from `system` (laden jumps). system:
+    an exact system name from the database, or "current" for the commander's journal position. station: optional name
+    of the delivery station, shown in the page subtitle only. Rewrites target in cg_board/config.json; a running
+    board applies it on its next refresh (about 30 s, no restart) and restarts its Change baselines when the system
+    changes. Unknown systems, or ones without coordinates, are rejected and nothing is changed.
+    """
+    return _run(cg_target.set_target, system, station)
 
 
 def main():

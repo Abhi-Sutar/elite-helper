@@ -154,7 +154,7 @@ function render() {
   document.getElementById("foot").textContent =
     "Stock and price come from player-reported market data, so a row only changes when someone opens that station's market. Data age is how long ago the last report came in. Loads = stock divided by " + fmt(S.cargo) +
     " t, one full hold. Margin = CG price minus the buy price. Change is stock now minus stock when the station first appeared on this tab (run 'python cg_board/cg_board.py reset' to restart it). Ls is the trip from the arrival star, looked up from EDSM and blank if unknown. Jumps are straight-line distance divided by the ship's range, rounded up: the group heading is laden jumps back to " +
-    cfg.target.name + ", and Jumps out is the unladen trip from " + cfg.target.name + ". TIGHT means the laden count only works if every jump is flown at full range. Score ranks stations inside each jump section: it rises with loads available (saturating) and falls with distance from the star and with data older than 6 h. Station types listed: " + cfg.station_types.join(", ") + ".";
+    cfg.target.name + ", and Jumps out is the unladen trip from " + cfg.target.name + ". TIGHT means the laden count only works if every jump is flown at full range. Score ranks stations inside each jump section: it rises with loads available (saturating) and falls with distance from the star and with data older than 6 h. PAD ? means the station type is not known yet (market data does not carry it; it is looked up on EDSM), so check the pad size before relying on it. Station types listed: " + cfg.station_types.join(", ") + ".";
 
   var groups = {};
   Object.keys(tab.rows).forEach(function (n) {
@@ -188,6 +188,7 @@ function tierHtml(j, list, tab) {
     var dtxt = d === 0 ? "0" : (d > 0 ? "+" : "") + fmt(d);
     var a = ageNow(r), loads = Math.floor(r.stock / S.cargo), chips = "";
     if (loads < 5) chips += '<span class="chip low">LOW</span>';
+    if (r.pad_unknown) chips += '<span class="chip low" title="The database has no station type for this market and EDSM has not answered yet, so it may not have a large pad">PAD ?</span>';
     if (a > 6) chips += '<span class="chip old">OLD DATA</span>';
     if (r.ly / (j * S.laden_ly) > 0.97) chips += '<span class="chip low">TIGHT</span>';
     if (r.ls != null && r.ls <= 50 && loads >= 50 && a <= 6) chips += '<span class="chip best">CLOSE TO STAR</span>';
