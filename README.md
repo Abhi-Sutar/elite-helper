@@ -371,10 +371,110 @@ Tools: `data_status`, `system_info`, `system_economy`, `find_systems`, `faction_
 `faction_timeline`, `faction_presence`, `station_market`, `price_history`, `station_traffic`, `system_traffic`,
 `busiest_stations`, `busiest_systems`, `station_activity`, `find_commodity`, `best_trades`, plus the journal tools
 `where_am_i`, `credit_rate`, `journal_search`, `travel_log`, `visited_systems`, `visited_stations`, `play_sessions`, `ledger`,
-`cargo`, `materials`, `ships`, `missions`, `reputation`, `commander_stats`, `carrier_status`, `journal_sync_status`.
+`cargo`, `materials`, `ships`, `missions`, `reputation`, `commander_stats`, `carrier_status`, `journal_sync_status`, and the
+Recce dashboard tools `dashboard_create`, `dashboard_update`, `dashboard_list`, `dashboard_open`, `dashboard_delete`.
 The listener must be running separately (the journal tools only need the database, and `where_am_i` not even that).
 To let the MCP ingest new journal lines itself, add `ELITE_HELPER_INGEST_DATABASE_URL` (a writer URL) to its `env`.
 For Claude Code, the plain CLI above works as-is through the shell.
+
+## Recce dashboard (live web page)
+
+A small local server reads the database directly and serves auto-refreshing dashboards on `127.0.0.1`, so a dashboard
+works in your normal browser, offline, with no dependency on the Claude app. The page is one HTML file with no
+build step and no CDN. It follows light/dark from the system and scrolls its table sideways on a phone-width window.
+
+The default dashboard is named `recce`: Agriculture systems of over 1M population within 100 ly of your current
+position (from the journal), controlled by a player faction with Expansion pending or active. Columns: System,
+Player controlling faction, Economy, Expansion pending for, Current state, Time since last update.
+
+### Install and run (Windows first)
+
+Nothing to install beyond the normal `uv sync`. `scripts\elite-dash.cmd` calls the project virtualenv, so put the
+`scripts` folder on your PATH or call it by full path. Database access uses the usual `ELITE_HELPER_DATABASE_URL`
+(a read-only role is fine).
+
+```
+scripts\elite-dash open                     # start the server if needed, open the default dashboard in the browser
+scripts\elite-dash open close-in            # open another dashboard
+scripts\elite-dash serve --port 8780        # run the server in the foreground instead
+scripts\elite-dash list                     # names, titles and URLs (server not started by this)
+scripts\elite-dash show recce --data        # config, plus one query run printed as JSON
+scripts\elite-dash new close-in --origin "Praea Euq YE-Y b1-3" --radius 40 --economy Agriculture --min-pop 1000000 --state-in pending --refresh 20
+scripts\elite-dash edit close-in --set radius_ly=60 --set filters.min_population=500000
+scripts\elite-dash delete close-in
+scripts\elite-dash stop                     # ask the background server to exit
+```
+
+A second `open` reuses the running server (a `server.json` file plus a health check on its port; a stale file is
+ignored). Ctrl+C stops a foreground server cleanly. `python -m eddn_helper.recce ...` is the same entry point, and
+`pyproject.toml` declares `elite-dash` as a console script for when the project is installed.
+
+### Claude / MCP
+
+The MCP server gets five tools. Each result carries the dashboard URL.
+
+| Tool | What it does |
+|---|---|
+| `dashboard_create(config)` | create or replace; starts the server if needed, returns `name` and `url` |
+| `dashboard_update(name, patch)` | merge changes; open browsers live-reload |
+| `dashboard_list()` | names, URLs, whether the server runs (read-only, starts nothing) |
+| `dashboard_open(name)` | start the server if needed and open the browser |
+| `dashboard_delete(name)` | remove the config |
+
+Example: `dashboard_create({"name": "industry", "filters": {"economy": "Industrial", "state_in": "pending"}, "radius_ly": 60})`.
+
+### Config
+
+One JSON file per dashboard in `%LOCALAPPDATA%\elite-helper\recce\dashboards` (`ELITE_HELPER_RECCE_DIR` moves the
+folder). Missing keys take the defaults below; errors name the field (`refresh_seconds: must be at least 5, got 4`).
+
+```json
+{
+  "name": "recce", "title": "Recce", "refresh_seconds": 20,
+  "origin": "current", "radius_ly": 100,
+  "filters": {"economy": "Agriculture", "min_population": 1000000, "controlling_only": true,
+              "player_faction_only": true, "faction_state": "Expansion", "state_in": "any",
+              "kinds": ["pending", "active"]},
+  "columns": ["system", "faction", "economy", "pending_for", "state", "last_update"],
+  "sort": {"by": "state", "order": "asc"},
+  "highlight_rules": [{"when": "active_for_under_hours", "hours": 48}],
+  "live_fetch": {"enabled": true, "max_requests": 10},
+  "stale_after_minutes": 60
+}
+```
+
+- `origin`: a system name, or `"current"` to use `where_am_i` (the last known position if the journal is quiet).
+- `state_in`: `any`, `pending`, `active` or `recovering`. With `any`, `kinds` picks which of `pending`, `active`,
+  `recovering`, `other` are shown.
+- `columns` (ordered): `system`, `faction`, `economy`, `pending_for`, `state`, `last_update`, `distance`,
+  `population`, `influence`. `sort.by`: `state`, `pending_for`, `system`, `faction`, `distance`, `population`,
+  `influence`, `last_update`.
+- `highlight_rules`: `active_for_under_hours` or `pending_for_over_hours`, re-checked in the browser every second.
+
+### How it behaves
+
+- **Refresh rule.** The server checks `newest_faction_update` (and reads `newest_market_update` for display) with
+  one cheap query every 5 s. It re-runs the full query only when that timestamp, or your current system, moved
+  **and** at least `refresh_seconds` (default 20) have passed since the last refresh: the slower of the two. Market
+  uploads alone do not trigger a refresh because no column uses market data. Editing a config reloads at once.
+- **Pending for.** From `faction_history`: the start of the current unbroken run of the state. "at least 5.2 h" when
+  stored history starts inside the run, "5.2 h to 9 h" when the previous reading without the state is known,
+  "unknown" when there is no history in the last 14 days. Cached per system and faction until the faction row
+  changes. Active rows read "active for ...". Rows with data older than 24 h are marked stale.
+- **Time since last update** counts up in the browser every second from the data age the database reports.
+- **Status pill.** Live, Stale (the database itself has not changed for `stale_after_minutes`) or Error (the last
+  attempt failed; the last good data stays on screen), with the last refresh time and the database timestamp.
+  Queries run in worker threads, so a slow one never blocks the server.
+- **Database URLs.** `%LOCALAPPDATA%\elite-helper\recce\settings.json` can hold `"database_url"` (the reader; the
+  default SQLite file is used without it) and `"ingest_database_url"` (the writer for the EDSM fetch), e.g.
+  `{"database_url": "postgresql+psycopg://elite_reader@localhost:5432/elite?passfile=...", "ingest_database_url": "postgresql+psycopg://elite_writer@localhost:5432/elite?passfile=..."}`.
+  `ELITE_HELPER_DATABASE_URL` and `ELITE_HELPER_INGEST_DATABASE_URL`, if set, take precedence. Restart the server
+  (`elite-dash stop`, then `open`) after adding it.
+- **Read-only.** Normal queries and polling use only the reader connection. The one exception is the limited EDSM
+  fetch: factions whose player status is unknown are hidden, and when a writer URL is configured (see above) the
+  server asks EDSM for their status, at most `live_fetch.max_requests` (hard cap 10) requests per refresh, only for
+  factions that lack it, then waits 10 minutes if any remain unknown. Results are stored by the existing
+  `refresh_missing` code. Without that variable nothing is fetched or written.
 
 ## Limitations
 

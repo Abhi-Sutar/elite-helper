@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Recce</title>
+<style>
+/* One status strip, one verdict line, one table that scrolls sideways inside its own box. No external files. */
+:root {
+  --bg: #f3f5f8; --panel: #ffffff; --fg: #16202c; --muted: #5d6b7c; --line: #d9e0e8;
+  --accent: #c2570c; --good: #1f7a4d; --warn: #a86a00; --crit: #b3261e;
+  --tint: #fbeee3; --good-soft: #dff3e8; --crit-soft: #fbe0de; --warn-soft: #fbf0d6;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-num: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1620; --panel: #17212d; --fg: #e6ecf3; --muted: #93a2b5; --line: #263445;
+    --accent: #f0883e; --good: #4fc58a; --warn: #e3b341; --crit: #ff7b72;
+    --tint: #2a2118; --good-soft: #14352a; --crit-soft: #3d1b1a; --warn-soft: #3a2f12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1620; --panel: #17212d; --fg: #e6ecf3; --muted: #93a2b5; --line: #263445;
+  --accent: #f0883e; --good: #4fc58a; --warn: #e3b341; --crit: #ff7b72;
+  --tint: #2a2118; --good-soft: #14352a; --crit-soft: #3d1b1a; --warn-soft: #3a2f12;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px;
+       padding: 20px 16px 40px; }
+.wrap { max-width: 1100px; margin-inline: auto; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+h1 { font-size: clamp(1.4rem, 3.4vw, 2rem); font-weight: 800; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; max-width: 70ch; line-height: 1.45; }
+select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+         padding: 6px 10px; }
+.status { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; padding: 10px 14px;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 0.85rem; }
+.status .item { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.k { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem; }
+.v { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.pill { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; padding: 3px 11px; border-radius: 99px;
+        border: 1px solid currentColor; font-size: 0.8rem; }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pill.live { color: var(--good); } .pill.stale { color: var(--warn); } .pill.error, .pill.offline { color: var(--crit); }
+.pill.loading { color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .pill.live::before { animation: pulse 2s ease-in-out infinite; } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+#notice { padding: 10px 14px; border-radius: 6px; background: var(--crit-soft); color: var(--crit); line-height: 1.4; }
+#note { padding: 8px 14px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); line-height: 1.4; font-size: 0.85rem; }
+#verdict { padding: 12px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); line-height: 1.4; }
+#verdict.hit { border-color: var(--good); background: var(--good-soft); }
+.scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.scroll:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+table { border-collapse: collapse; width: 100%; min-width: 780px; font-size: 0.9rem; }
+th { text-align: left; font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase;
+     color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--tint); }
+td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td:first-child { min-width: 150px; }
+tbody tr:last-child td { border-bottom: 0; }
+tr.match td { background: var(--good-soft); }
+td.num, .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sys { font-weight: 600; }
+.meta { color: var(--muted); font-size: 0.78rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.age.fresh { color: var(--good); } .age.old { color: var(--crit); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { display: inline-block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em; padding: 1px 8px;
+        border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+.chip.pending { color: var(--accent); background: var(--tint); border-color: transparent; }
+.chip.active { color: var(--good); background: var(--good-soft); border-color: transparent; }
+.chip.war, .chip.stale { color: var(--crit); background: var(--crit-soft); border-color: transparent; }
+.chip.changed { color: var(--accent); border-color: var(--accent); }
+.empty { padding: 28px 14px; color: var(--muted); text-align: center; line-height: 1.5; }
+footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85ch; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">Recce</h1>
+      <p class="sub" id="sub"></p>
+    </div>
+    <select id="switch" aria-label="Dashboard" hidden></select>
+  </header>
+
+  <section class="status" aria-label="Data status">
+    <span class="item"><span id="pill" class="pill loading">Loading</span></span>
+    <span class="item"><span class="k">Database updated</span><span class="v" id="dbAge">-</span></span>
+    <span class="item"><span class="k">Last refresh</span><span class="v" id="refreshAt">-</span></span>
+    <span class="item"><span class="k">Origin</span><span class="v" id="origin">-</span></span>
+  </section>
+
+  <div id="notice" role="alert" hidden></div>
+  <div id="note" hidden></div>
+  <div id="verdict" hidden></div>
+
+  <div class="scroll" tabindex="0" role="region" aria-label="Systems">
+    <table>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var NAME = new URLSearchParams(location.search).get('d');
+  var S = { cfg: null, labels: {}, dashboards: [], data: null, status: null, connected: false, sig: {}, changed: {}, loaded: false };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(t) {
+    return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function ms(iso) { return iso ? Date.parse(iso) : null; }
+  function dur(t) {
+    if (t < 0) t = 0;
+    var s = Math.floor(t / 1000);
+    if (s < 60) return s + ' s';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + ' min';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + ' h ' + String(m % 60).padStart(2, '0') + ' min';
+    return Math.floor(h / 24) + ' d ' + (h % 24) + ' h';
+  }
+  function hrs(t) {
+    if (t < 0) t = 0;
+    var h = t / 3600000;
+    if (h < 1) return Math.max(1, Math.round(t / 60000)) + ' min';
+    return h < 10 ? h.toFixed(1) + ' h' : Math.round(h) + ' h';
+  }
+  function pop(n) {
+    if (typeof n !== 'number') return '';
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + ' B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + ' M';
+    return Math.round(n / 1e3) + ' k';
+  }
+  function clock(t) { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+
+  // The same wording the server uses in core.run_text.
+  function pendText(r, now) {
+    if (r.kind !== 'pending' && r.kind !== 'active' && r.kind !== 'recovering') return '-';
+    if (!r.run) return 'unknown';
+    var pre = r.kind === 'active' ? 'active for ' : r.kind === 'recovering' ? 'recovering for ' : '';
+    var first = ms(r.run.first_seen), absent = ms(r.run.last_absent);
+    if (absent == null) return pre + 'at least ' + hrs(now - first);
+    return pre + hrs(now - first) + ' to ' + hrs(now - absent);
+  }
+  function matches(r, now) {
+    if (!r.run || !S.cfg) return false;
+    var h = (now - ms(r.run.first_seen)) / 3600000;
+    return (S.cfg.highlight_rules || []).some(function (x) {
+      return (x.when === 'active_for_under_hours' && r.kind === 'active' && h <= x.hours) ||
+             (x.when === 'pending_for_over_hours' && r.kind === 'pending' && h >= x.hours);
+    });
+  }
+  function ruleText(x) {
+    return x.when === 'active_for_under_hours' ? 'active for under ' + x.hours + ' hours' : 'pending for over ' + x.hours + ' hours';
+  }
+
+  function subtitle() {
+    var c = S.cfg, f = c.filters, bits = [];
+    var eco = f.economy ? [].concat(f.economy).join(' or ') : 'Any economy';
+    bits.push(eco + ' systems');
+    if (f.min_population) bits.push('of ' + pop(f.min_population) + ' population or more');
+    var o = (S.data && S.data.origin && S.data.origin.name) || c.origin;
+    bits.push('within ' + c.radius_ly + ' ly of ' + (c.origin === 'current' ? 'your position (' + o + ')' : o));
+    var tail = [];
+    if (f.controlling_only) tail.push('controlled by ' + (f.player_faction_only ? 'a player faction' : 'a faction'));
+    else if (f.player_faction_only) tail.push('with a player faction');
+    if (f.faction_state) {
+      var where = f.state_in === 'any' ? ((f.kinds || []).join(' or ') || 'any') : f.state_in;
+      tail.push('with ' + f.faction_state + ' ' + where);
+    }
+    return bits.join(' ') + (tail.length ? ', ' + tail.join(' ') : '') + '.';
+  }
+
+  function cell(col, r, i, now) {
+    switch (col) {
+      case 'system':
+        var m1 = (typeof r.distance_ly === 'number' ? r.distance_ly.toFixed(0) + ' ly' : '') + (r.population ? ', ' + pop(r.population) + ' pop.' : '');
+        return '<td><div class="sys">' + esc(r.system) + '</div><div class="meta">' + esc(m1) + '</div></td>';
+      case 'faction':
+        return '<td><div>' + esc(r.faction) + '</div><div class="meta">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '% influence' : '') + '</div></td>';
+      case 'economy':
+        return '<td>' + esc(r.economy || '') + (r.second_economy ? '<div class="meta">' + esc(r.second_economy) + '</div>' : '') + '</td>';
+      case 'pending_for':
+        return '<td class="num" data-pend="' + i + '"></td>';
+      case 'state':
+        var st = (S.cfg.filters.faction_state || 'State');
+        var chips = [];
+        if (r.kind === 'active') chips.push('<span class="chip active">' + esc(st) + ' active</span>');
+        else if (r.kind === 'pending') chips.push('<span class="chip pending">' + esc(st) + ' pending</span>');
+        else if (r.kind === 'recovering') chips.push('<span class="chip">' + esc(st) + ' recovering</span>');
+        if (r.war) chips.push('<span class="chip war">War in system</span>');
+        if (S.changed[r.key] && now - S.changed[r.key] < 300000) chips.push('<span class="chip changed">changed</span>');
+        return '<td><div class="chips">' + chips.join('') + '</div><div class="meta">Main state: ' + esc(r.main_state || 'None') + '</div></td>';
+      case 'last_update':
+        return '<td class="num age" data-last="' + i + '"></td>';
+      case 'distance':
+        return '<td class="num">' + (typeof r.distance_ly === 'number' ? r.distance_ly.toFixed(1) : '') + '</td>';
+      case 'population':
+        return '<td class="num">' + (r.population ? r.population.toLocaleString() : '') + '</td>';
+      case 'influence':
+        return '<td class="num">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '%' : '') + '</td>';
+    }
+    return '<td></td>';
+  }
+
+  function render() {
+    if (!S.cfg) return;
+    var cols = S.cfg.columns, now = Date.now();
+    document.title = S.cfg.title;
+    $('title').textContent = S.cfg.title;
+    $('sub').textContent = subtitle();
+    $('head').innerHTML = cols.map(function (c) { return '<th>' + esc(S.labels[c] || c) + '</th>'; }).join('');
+    var rows = (S.data && S.data.rows) || [];
+    rows.forEach(function (r) {
+      var sig = [r.kind, r.main_state, r.influence_pct, r.war].join('|');
+      if (S.loaded && S.sig[r.key] && S.sig[r.key] !== sig) S.changed[r.key] = now;
+      S.sig[r.key] = sig;
+    });
+    if (S.data) S.loaded = true;
+    $('rows').innerHTML = rows.length ? rows.map(function (r, i) {
+      return '<tr data-row="' + i + '">' + cols.map(function (c) { return cell(c, r, i, now); }).join('') + '</tr>';
+    }).join('') : '<tr><td class="empty" colspan="' + cols.length + '">' + esc(emptyText()) + '</td></tr>';
+    renderStatus();
+    tick();
+    var f = S.cfg.filters, live = (S.data && S.data.live_fetch) || {}, unknown = (S.data && S.data.hidden_unknown_player) || 0;
+    var foot = 'This page refreshes at the slower of two things: the database has newer faction data, and at least ' + S.cfg.refresh_seconds +
+      ' seconds since the last refresh. Times keep counting between refreshes. A pending time shown as a range means the state began between two stored readings; "at least" means the stored history starts inside the run. Rows with data older than 24 hours are marked stale.';
+    if (f.player_faction_only) foot += ' Factions whose player status is not known yet are hidden until it is checked (up to ' + S.cfg.live_fetch.max_requests + ' EDSM requests per refresh, only when a status is missing).';
+    $('foot').textContent = foot;
+    var note = [];
+    if (unknown) note.push(unknown + (unknown === 1 ? ' faction is' : ' factions are') + ' hidden because its player status is unknown.');
+    if (live.note) note.push(live.note + '.');
+    if (S.data && S.data.truncated) note.push('Only the nearest 200 systems are shown.');
+    $('note').hidden = !note.length;
+    $('note').textContent = note.join(' ');
+  }
+
+  function emptyText() {
+    if (S.status && S.status.state === 'error' && !S.data) return S.status.error;
+    if (!S.data) return 'Waiting for the first reading.';
+    return 'No system matches right now.';
+  }
+
+  function renderStatus() {
+    var st = S.status, pill = $('pill'), state = S.connected || !S.cfg ? (st ? st.state : 'loading') : 'offline';
+    if (!S.connected && S.cfg && S.everConnected) state = 'offline';
+    var label = { live: 'Live', stale: 'Stale', error: 'Error', loading: 'Loading', offline: 'Offline' }[state] || state;
+    pill.className = 'pill ' + state;
+    pill.textContent = label;
+    var msg = state === 'offline' ? 'Lost the connection to the Recce server. Showing the last data; reconnecting.' :
+              (st && st.state === 'error' ? st.error + (S.data ? ' Showing the last good data.' : '') : '');
+    $('notice').hidden = !msg;
+    $('notice').textContent = msg;
+  }
+
+  function tick() {
+    var now = Date.now(), rows = (S.data && S.data.rows) || [], i, els;
+    els = document.querySelectorAll('[data-pend]');
+    for (i = 0; i < els.length; i++) {
+      var r = rows[+els[i].getAttribute('data-pend')];
+      if (r) els[i].textContent = pendText(r, now);
+    }
+    els = document.querySelectorAll('[data-last]');
+    for (i = 0; i < els.length; i++) {
+      var q = rows[+els[i].getAttribute('data-last')];
+      if (!q) continue;
+      if (!q.last_update_at) { els[i].textContent = 'unknown'; continue; }
+      var d = now - ms(q.last_update_at);
+      els[i].innerHTML = esc(dur(d)) + (d >= 86400000 ? ' <span class="chip stale">STALE</span>' : '');
+      els[i].className = 'num age ' + (d < 3600000 ? 'fresh' : d >= 86400000 ? 'old' : '');
+    }
+    var trs = document.querySelectorAll('tr[data-row]'), hit = [];
+    for (i = 0; i < trs.length; i++) {
+      var row = rows[i], on = row && matches(row, now);
+      trs[i].className = on ? 'match' : '';
+      if (on) hit.push(row.system);
+    }
+    var rules = (S.cfg && S.cfg.highlight_rules) || [], v = $('verdict');
+    if (!rules.length || !S.data) { v.hidden = true; }
+    else {
+      v.hidden = false;
+      v.className = hit.length ? 'hit' : '';
+      v.innerHTML = hit.length
+        ? '<strong>' + hit.length + (hit.length === 1 ? ' system matches' : ' systems match') + ':</strong> ' + esc(hit.join(', ')) + '. ' + esc(rules.map(ruleText).join('; ')) + '.'
+        : '<strong>No match right now.</strong> Highlight rule: ' + esc(rules.map(ruleText).join('; ')) + '.';
+    }
+    var st = S.status;
+    $('dbAge').textContent = st && st.db_newest_faction_update ? dur(now - ms(st.db_newest_faction_update)) + ' ago (' + clock(ms(st.db_newest_faction_update)) + ')' : '-';
+    $('refreshAt').textContent = st && st.last_refresh_at ? clock(ms(st.last_refresh_at)) + ' (' + dur(now - ms(st.last_refresh_at)) + ' ago)' : '-';
+    $('origin').textContent = S.data && S.data.origin ? S.data.origin.name : '-';
+  }
+
+  function onConfig(p) {
+    S.cfg = p.config; S.labels = p.labels || {}; S.dashboards = p.dashboards || [];
+    var sw = $('switch');
+    sw.hidden = S.dashboards.length < 2;
+    sw.innerHTML = S.dashboards.map(function (n) { return '<option' + (n === NAME ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('');
+    if (p.error && !p.config) { S.status = { state: 'error', error: p.error }; }
+    render();
+  }
+  function onData(p) { S.data = p; S.status = p.status; render(); }
+  function onStatus(p) { S.status = p; renderStatus(); tick(); }
+
+  function getJson(url) { return fetch(url, { cache: 'no-store' }).then(function (r) { return r.json(); }); }
+
+  function connect() {
+    if (typeof EventSource === 'undefined') {
+      S.connected = true;
+      var poll = function () {
+        getJson('/api/config?d=' + encodeURIComponent(NAME)).then(onConfig)
+          .then(function () { return getJson('/api/data?d=' + encodeURIComponent(NAME)); }).then(onData).catch(function () {});
+      };
+      poll(); setInterval(poll, 10000);
+      return;
+    }
+    var es = new EventSource('/events?d=' + encodeURIComponent(NAME));
+    es.addEventListener('config', function (e) { onConfig(JSON.parse(e.data)); });
+    es.addEventListener('data', function (e) { onData(JSON.parse(e.data)); });
+    es.addEventListener('status', function (e) { onStatus(JSON.parse(e.data)); });
+    es.onopen = function () { S.connected = true; S.everConnected = true; renderStatus(); };
+    es.onerror = function () { S.connected = false; renderStatus(); };
+  }
+
+  $('switch').addEventListener('change', function () { location.search = '?d=' + encodeURIComponent(this.value); });
+  setInterval(tick, 1000);
+
+  if (!NAME) { location.replace('/'); return; }
+  getJson('/api/config?d=' + encodeURIComponent(NAME)).then(function (p) {
+    if (p.error && !p.config) { $('notice').hidden = false; $('notice').textContent = p.error; return; }
+    onConfig(p);
+  }).catch(function () {}).then(function () {
+    return getJson('/api/data?d=' + encodeURIComponent(NAME)).then(onData).catch(function () {});
+  }).then(connect);
+})();
+</script>
+</body>
+</html>

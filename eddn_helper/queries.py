@@ -773,14 +773,20 @@ def best_trades(session, origin_name, ly=30, cargo=None, max_age_hours=24, min_a
             "markets_considered": len({r["market_id"] for r, _ in rows}), "trades": trades[:limit]}
 
 
+def newest_stamps(session):
+    """(newest EDDN market update, newest EDDN faction update) as datetimes: two cheap aggregates, for change polling."""
+    newest_m = session.execute(select(func.max(Market.updated_at)).where(Market.source == "eddn")).scalar_one()
+    newest_s = session.execute(select(func.max(System.factions_updated_at))
+                               .where(System.source == "eddn")).scalar_one()
+    return newest_m, newest_s
+
+
 def data_status(session):
     def n(model):
         return session.execute(select(func.count()).select_from(model)).scalar_one()
     hb = store.get_meta(session, "listener_heartbeat")
     last_msg = store.get_meta(session, "last_message_at")
-    newest_m = session.execute(select(func.max(Market.updated_at)).where(Market.source == "eddn")).scalar_one()
-    newest_s = session.execute(select(func.max(System.factions_updated_at))
-                               .where(System.source == "eddn")).scalar_one()
+    newest_m, newest_s = newest_stamps(session)
     hb_age = round((time.time() - int(hb)) / 60, 1) if hb else None
     bind = session.get_bind()
     url = bind.url.render_as_string(hide_password=False)
