@@ -403,6 +403,7 @@ scripts\elite-dash show recce --data        # config, plus one query run printed
 scripts\elite-dash new close-in --origin "Praea Euq YE-Y b1-3" --radius 40 --economy Agriculture --min-pop 1000000 --state-in pending --refresh 20
 scripts\elite-dash edit close-in --set radius_ly=60 --set filters.min_population=500000
 scripts\elite-dash delete close-in
+scripts\elite-dash status                   # count running servers; --kill-strays force-stops any that are not the registered one
 scripts\elite-dash stop                     # ask the background server to exit
 ```
 
@@ -451,6 +452,9 @@ folder). Missing keys take the defaults below; errors name the field (`refresh_s
   moment, so it stays put as you jump around. The page shows a "Recentre on <system>" button to move the anchor to
   where you are now (also `elite-dash recentre [name]` and the `dashboard_recentre` tool). To follow your position
   live instead, set the origin to `current` with `edit --set origin=current` or `dashboard_update`.
+- The page header has a Radius box, a "Player factions only" switch and the Recentre button; each writes the dashboard's
+  config (`radius_ly`, `filters.player_faction_only`, `origin`), so the CLI and MCP see the same values. With the switch off,
+  NPC and unchecked factions are listed with a PLAYER / NPC / ? tag and no EDSM lookups are made.
 - `state_in`: `any`, `pending`, `active` or `recovering`. With `any`, `kinds` picks which of `pending`, `active`,
   `recovering`, `other` are shown.
 - `columns` (ordered): `system`, `faction`, `economy`, `pending_for`, `state`, `last_update`, `distance`,

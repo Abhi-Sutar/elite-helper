@@ -44,6 +44,11 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input[type=number] { font: inherit; font-family: var(--font-num); font-variant-numeric: tabular-nums; width: 5.5em;
                      color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 input[type=number]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=checkbox] { width: 1.1em; height: 1.1em; accent-color: var(--accent); margin: 0; }
+input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tag { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; padding: 0 6px; border-radius: 99px;
+       border: 1px solid var(--line); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
+.tag.player { color: var(--good); border-color: var(--good); }
 #toast { color: var(--muted); font-size: 0.85rem; }
 select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
          padding: 6px 10px; }
@@ -99,6 +104,8 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
       <span id="toast" role="status"></span>
       <label class="radius" title="Search radius around the centre system">Radius
         <input id="radius" type="number" min="1" max="1000" step="1" inputmode="decimal"> ly</label>
+      <label class="radius" title="Show only factions that are player factions"><input id="playeronly" type="checkbox">
+        Player factions only</label>
       <button id="recentre" type="button" hidden></button>
       <select id="switch" aria-label="Dashboard" hidden></select>
     </div>
@@ -207,7 +214,9 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
         var m1 = (typeof r.distance_ly === 'number' ? r.distance_ly.toFixed(0) + ' ly' : '') + (r.population ? ', ' + pop(r.population) + ' pop.' : '');
         return '<td><div class="sys">' + esc(r.system) + '</div><div class="meta">' + esc(m1) + '</div></td>';
       case 'faction':
-        return '<td><div>' + esc(r.faction) + '</div><div class="meta">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '% influence' : '') + '</div></td>';
+        var tag = S.cfg.filters.player_faction_only ? '' : (r.is_player === true ? '<span class="tag player">PLAYER</span>'
+                  : r.is_player === false ? '<span class="tag">NPC</span>' : '<span class="tag" title="Player status not checked yet">?</span>');
+        return '<td><div>' + esc(r.faction) + tag + '</div><div class="meta">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '% influence' : '') + '</div></td>';
       case 'economy':
         return '<td>' + esc(r.economy || '') + (r.second_economy ? '<div class="meta">' + esc(r.second_economy) + '</div>' : '') + '</td>';
       case 'pending_for':
@@ -238,6 +247,7 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     var cols = S.cfg.columns, now = Date.now();
     document.title = S.cfg.title;
     if (document.activeElement !== $('radius')) $('radius').value = S.cfg.radius_ly;
+    $('playeronly').checked = !!S.cfg.filters.player_faction_only;
     $('title').textContent = S.cfg.title;
     $('sub').textContent = subtitle();
     $('head').innerHTML = cols.map(function (c) { return '<th>' + esc(S.labels[c] || c) + '</th>'; }).join('');
@@ -297,6 +307,15 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (x) { if (x.ok) toast('Radius set to ' + x.j.radius_ly + ' ly'); else { toast(x.j.error); inp.value = S.cfg.radius_ly; } })
       .catch(function () { toast('Could not reach the Recce server.'); });
+  }
+  function setPlayerOnly() {
+    var box = $('playeronly');
+    box.disabled = true;
+    fetch('/api/player-only?d=' + encodeURIComponent(NAME) + '&on=' + (box.checked ? 1 : 0), { method: 'POST', headers: { 'X-Recce': '1' } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (x) { if (x.ok) toast(x.j.player_faction_only ? 'Showing player factions only' : 'Showing all factions'); else { toast(x.j.error); box.checked = S.cfg.filters.player_faction_only; } })
+      .catch(function () { toast('Could not reach the Recce server.'); box.checked = S.cfg.filters.player_faction_only; })
+      .then(function () { box.disabled = false; });
   }
   function toast(t) {
     $('toast').textContent = t;
@@ -387,6 +406,7 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
 
   $('recentre').addEventListener('click', recentre);
   $('radius').addEventListener('change', setRadius);
+  $('playeronly').addEventListener('change', setPlayerOnly);
   $('radius').addEventListener('keydown', function (e) { if (e.key === 'Enter') setRadius(); });
   $('switch').addEventListener('change', function () { location.search = '?d=' + encodeURIComponent(this.value); });
   setInterval(tick, 1000);

@@ -1,7 +1,9 @@
 """The Recce HTTP server with a fake core: loopback only, endpoints, SSE, refresh timing, errors keep the last good
 data, a slow query does not block the server, config edits reload live, and one server per machine."""
 
+import contextlib
 import http.client
+import io
 import json
 import os
 import tempfile
@@ -341,6 +343,85 @@ class RadiusTests(ServerCase):
         self.assertIn("radius_ly: must be at least 1", body["error"])
         self.assertEqual(self.post("&ly=abc", {"X-Recce": "1"})[0], 400)
         self.assertEqual(rcfg.load("recce")["radius_ly"], 37.5)                        # bad values changed nothing
+
+
+class PlayerOnlyTests(ServerCase):
+    def post(self, q, name="recce", headers=None):
+        code, _, body = self.get(f"/api/player-only?d={name}{q}", method="POST", headers=headers)
+        return code, json.loads(body)
+
+    def test_toggle_writes_pushes_and_validates(self):
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.post("&on=0")[0], 404)                                   # header required
+        self.assertEqual(self.post("&on=0", headers={"X-Recce": "1"}), (200, {"name": "recce", "player_faction_only": False}))
+        self.assertFalse(rcfg.load("recce")["filters"]["player_faction_only"])
+        self.assertTrue(wait_for(lambda: self.json("/api/config?d=recce")[1]["config"]["filters"]["player_faction_only"] is False))
+        self.assertEqual(self.json("/api/config?d=recce")[1]["labels"]["faction"], "Faction")
+        self.assertEqual(self.post("&on=1", headers={"X-Recce": "1"})[1]["player_faction_only"], True)
+        self.assertEqual(self.json("/api/config?d=recce")[1]["labels"]["faction"] if wait_for(
+            lambda: self.json("/api/config?d=recce")[1]["labels"]["faction"].startswith("Player")) else "", "Player controlling faction")
+        self.assertEqual(self.post("&on=maybe", headers={"X-Recce": "1"})[0], 400)
+        self.assertEqual(self.post("", headers={"X-Recce": "1"})[0], 400)
+        self.assertEqual(self.post("&on=0", name="nope", headers={"X-Recce": "1"})[0], 404)
+        self.assertTrue(rcfg.load("recce")["filters"]["player_faction_only"])         # bad calls changed nothing
+
+
+class StatusTests(unittest.TestCase):
+    CMD = r"C:\x\.venv\Scripts\python.exe -m eddn_helper.recce serve --quiet"
+
+    def table(self):
+        return [{"pid": 10, "parent": 1, "started": "t1", "cmd": self.CMD},                # server A launcher
+                {"pid": 11, "parent": 10, "started": "t1", "cmd": self.CMD},               # server A interpreter
+                {"pid": 20, "parent": 2, "started": "t2", "cmd": self.CMD},                # server B launcher
+                {"pid": 21, "parent": 20, "started": "t2", "cmd": self.CMD},               # server B interpreter
+                {"pid": 30, "parent": 1, "started": "t3", "cmd": "python -m eddn_helper.recce list"},
+                {"pid": 31, "parent": 1, "started": "t3", "cmd": "notepad.exe"}]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        env = mock.patch.dict(os.environ, {rcfg.ENV_DIR: self.tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def register(self, pid):
+        server.info_path().write_text(json.dumps({"pid": pid, "port": 1, "started": "x"}), encoding="utf-8")
+
+    def test_pairs_count_as_one_server_and_only_serve_commands_count(self):
+        groups = server.find_servers(self.table())
+        self.assertEqual([(g["root"], g["pids"]) for g in groups], [(10, [10, 11]), (20, [20, 21])])
+
+    def test_registered_server_is_not_a_stray(self):
+        self.register(21)                                      # server.json holds the interpreter pid
+        self.assertEqual([(g["root"], g["registered"]) for g in server.find_servers(self.table())],
+                         [(10, False), (20, True)])
+
+    def test_no_server_file_makes_every_server_a_stray(self):
+        self.assertTrue(all(not g["registered"] for g in server.find_servers(self.table())))
+
+    def test_cli_status_reports_and_kills_only_strays(self):
+        from eddn_helper.recce import cli
+        self.register(11)
+        table = self.table()
+        out = io.StringIO()
+        running = {"base_url": "http://127.0.0.1:1", "pid": 11, "port": 1}
+        with mock.patch.object(server, "_process_table", side_effect=lambda: table), \
+                mock.patch.object(server, "running_server", return_value=running), \
+                mock.patch.object(server, "kill_server") as kill, contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["status"]), 1)                       # strays found, nothing killed
+            kill.assert_not_called()
+            self.assertIn("STRAY", out.getvalue())
+            self.assertIn("server processes found: 2", out.getvalue())
+            real_find = server.find_servers
+            after = [g for g in real_find(table) if g["registered"]]
+            with mock.patch.object(server, "find_servers", side_effect=[real_find(table), after]):
+                self.assertEqual(cli.main(["status", "--kill-strays"]), 0)
+            kill.assert_called_once()
+            self.assertEqual(kill.call_args[0][0]["root"], 20)              # the registered one (10) is left alone
+
+    def test_real_process_table_is_readable(self):
+        rows = server._process_table()
+        self.assertTrue(any(r["pid"] == os.getpid() for r in rows))
 
 
 class SingletonTests(ServerCase):
