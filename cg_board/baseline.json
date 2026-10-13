@@ -1,106 +1,75 @@
 {
- "super": {
-  "baselineAt": "2026-10-11T00:54:41Z",
-  "base": {
-   "Froud Depot": 406360,
-   "Pons's Pride": 6712,
-   "LopezdeLegazpi Terminal": 92387,
-   "Buren Vision": 212225,
-   "Gresley Vista": 2167688,
-   "[bpcl] Smeltshop 2": 579039,
-   "Ellington's Resolve": 338490,
-   "Paradisi Depot": 1076403,
-   "Newfield Vision": 478222,
-   "Gandhi Prospect": 1738027,
-   "Deutsch City": 266821,
-   "Chertovsky's Pride": 8720,
-   "Seamans Terminal": 433256,
-   "Nigh Depot": 680366,
-   "Dragonsreach": 1151,
-   "Historical Reference": 2010023,
-   "[bpcl] Smeltshop 1": 107543,
-   "Benyovszky Gateway": 42330,
-   "Hasse Prospect": 1109,
-   "Hoshino Ruri Skunkworks": 2066,
-   "Fox Box": 2469,
-   "Vlamingh Refinery": 13066,
-   "Holland Hub": 194098,
-   "Vulcan Ironworks": 1690,
-   "Whitworth Town": 3693,
-   "[csel] Harmony Horizons": 1944,
-   "Arms And Steel - Free Wolfs Quality": 658169,
-   "Bogdan Main": 49226,
-   "Hrathen The Savior": 81875,
-   "Kamieniec": 1193,
-   "Wiseman's Claim": 58256,
-   "[bpcl] Metallurgical Center": 899198,
-   "Wolves Howling": 1643,
-   "Dante's Pride": 1435,
-   "Hubble Hub": 1897,
-   "Bogdan Primary": 1541,
-   "Springer's Pride": 1631,
-   "Beer Enterprise": 1566,
-   "Scott's Progress": 1181,
-   "Andriyevsky Terminal": 2091,
-   "Menezes Depot": 1108,
-   "Christiano Plant": 2544,
-   "Noyce Landing": 3077,
-   "Kasdan Vision": 1951,
-   "Kummer Hub": 1159,
-   "Midgley Platform": 1352,
-   "Fulton Refinery": 2467,
-   "Grushin Prospect": 1092,
-   "Serpents Lair": 1884,
-   "Levi-Strauss's Inheritance": 1765,
-   "Luyten Hub": 3009,
-   "Penguin Vacation Site": 2578,
-   "Rontgen Depot": 4480,
-   "Haskin Gateway": 4073,
-   "Acgt Debye Beacon 1": 32595,
-   "Maitz Platform": 1346
-  }
- },
- "semi": {
-  "baselineAt": "2026-10-11T00:54:41Z",
-  "base": {
-   "Grushin Prospect": 427,
-   "Midgley Platform": 1055,
-   "Forrester's Progress": 174
-  }
- },
- "power": {
-  "baselineAt": "2026-10-11T00:54:41Z",
-  "base": {
-   "Frakes City": 379,
-   "Malerba Landing": 147,
-   "Vinogradov Horizons": 50,
-   "Malvern Prospect": 91
-  }
- },
- "comp": {
-  "baselineAt": "2026-10-11T00:54:41Z",
-  "base": {
-   "Frakes City": 277,
-   "Nespoli Vista": 664,
-   "Vinogradov Horizons": 253,
-   "Malvern Prospect": 917,
-   "Malerba Landing": 331
-  }
- },
+ "_target": "HIP 69861",
  "bert": {
-  "baselineAt": "2026-10-13T18:20:20Z",
-  "base": {}
+  "baselineAt": "2026-10-13T18:36:03Z",
+  "base": {
+   "Shahabud-dinGhori Beacon": 30758,
+   "Husband Sanctuary": 50835,
+   "Broken": 3619920,
+   "Capital City": 289215,
+   "Mikey Walsh Goon Stop": 886700,
+   "Magyarok Otthona - Home Of The Huns": 116382,
+   "Ozanne City": 1569067,
+   "Nifelheim": 638226,
+   "Corograsch Legacy": 73268,
+   "Leguin City": 81602,
+   "Arms And Steel - Free Wolfs Quality": 826290,
+   "Cassini Vista": 48670,
+   "Kudo's Folly": 21469
+  }
  },
  "gall": {
-  "baselineAt": "2026-10-13T18:20:20Z",
-  "base": {}
+  "baselineAt": "2026-10-13T18:36:03Z",
+  "base": {
+   "Shahabud-dinGhori Beacon": 29167,
+   "Broken": 4587313,
+   "Capital City": 548510,
+   "Corograsch Legacy": 126170,
+   "Leguin City": 99968,
+   "Husband Sanctuary": 68799,
+   "Ozanne City": 3251515,
+   "Nifelheim": 1013964,
+   "Cassini Vista": 54377,
+   "Magyarok Otthona - Home Of The Huns": 244911,
+   "Mikey Walsh Goon Stop": 2114087,
+   "Arms And Steel - Free Wolfs Quality": 3770683,
+   "Kudo's Folly": 81166
+  }
  },
  "indi": {
-  "baselineAt": "2026-10-13T18:20:20Z",
-  "base": {}
+  "baselineAt": "2026-10-13T18:36:03Z",
+  "base": {
+   "Husband Sanctuary": 253057,
+   "Shahabud-dinGhori Beacon": 85380,
+   "Broken": 665733,
+   "Capital City": 319133,
+   "Mikey Walsh Goon Stop": 2461357,
+   "Cassini Vista": 292002,
+   "Ozanne City": 577093,
+   "Corograsch Legacy": 80899,
+   "Leguin City": 22511,
+   "Magyarok Otthona - Home Of The Huns": 411984,
+   "Nifelheim": 279722,
+   "Arms And Steel - Free Wolfs Quality": 3959290,
+   "Kudo's Folly": 59593
+  }
  },
  "colt": {
-  "baselineAt": "2026-10-13T18:20:20Z",
-  "base": {}
+  "baselineAt": "2026-10-13T18:36:03Z",
+  "base": {
+   "Husband Sanctuary": 73330,
+   "Shahabud-dinGhori Beacon": 24395,
+   "Broken": 956991,
+   "Capital City": 458754,
+   "Mikey Walsh Goon Stop": 703243,
+   "Magyarok Otthona - Home Of The Huns": 338649,
+   "Corograsch Legacy": 103843,
+   "Arms And Steel - Free Wolfs Quality": 2169300,
+   "Ozanne City": 829567,
+   "Leguin City": 32360,
+   "Cassini Vista": 66674,
+   "Nifelheim": 401395,
+   "Kudo's Folly": 68106
+  }
  }
 }

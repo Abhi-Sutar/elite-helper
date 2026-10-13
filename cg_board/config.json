@@ -5,8 +5,8 @@
   "refresh_seconds": 30,
   "max_age_hours": 72,
   "target": {
-    "name": "Cabot Vision",
-    "system": "Col 285 Sector GN-H c11-5"
+    "name": "HIP 69861",
+    "system": "HIP 69861"
   },
   "ship": {
     "name": "Le Big Plipper",
