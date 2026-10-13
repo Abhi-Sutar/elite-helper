@@ -44,6 +44,11 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input[type=number] { font: inherit; font-family: var(--font-num); font-variant-numeric: tabular-nums; width: 5.5em;
                      color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 input[type=number]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=checkbox] { width: 1.1em; height: 1.1em; accent-color: var(--accent); margin: 0; }
+input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tag { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; padding: 0 6px; border-radius: 99px;
+       border: 1px solid var(--line); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
+.tag.player { color: var(--good); border-color: var(--good); }
 #toast { color: var(--muted); font-size: 0.85rem; }
 select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
          padding: 6px 10px; }
@@ -74,6 +79,8 @@ tbody tr:last-child td { border-bottom: 0; }
 tr.match td { background: var(--good-soft); }
 td.num, .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sys { font-weight: 600; }
+.sys a { color: inherit; text-decoration: none; }
+.sys a:hover { text-decoration: underline; }
 .meta { color: var(--muted); font-size: 0.78rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .age.fresh { color: var(--good); } .age.old { color: var(--crit); font-weight: 600; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -83,6 +90,22 @@ td.num, .num { font-family: var(--font-num); font-variant-numeric: tabular-nums;
 .chip.active { color: var(--good); background: var(--good-soft); border-color: transparent; }
 .chip.war, .chip.stale { color: var(--crit); background: var(--crit-soft); border-color: transparent; }
 .chip.changed { color: var(--accent); border-color: var(--accent); }
+.chip.likely { color: var(--good); background: var(--good-soft); border-color: transparent; }
+.chip.possible, .chip.uncertain { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.chip.unlikely { color: var(--crit); background: var(--crit-soft); border-color: transparent; }
+tr[data-exp] { cursor: pointer; }
+tr[data-exp]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.caret { display: inline-block; color: var(--muted); margin-left: 4px; font-size: 0.7rem; }
+tr.detail td { background: var(--tint); padding: 12px 14px 14px; cursor: default; }
+.why { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; max-width: 90ch; }
+.why li { display: grid; grid-template-columns: 4.5em 1fr; gap: 10px; line-height: 1.4; }
+.why .res { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding-top: 2px; }
+.res.pass { color: var(--good); } .res.fail { color: var(--crit); } .res.unknown { color: var(--warn); } .res.info { color: var(--muted); }
+.why .t { font-weight: 600; }
+.why .conf { color: var(--muted); font-size: 0.72rem; margin-left: 6px; }
+.why .d, .whyfoot { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+.whyhead { font-weight: 600; margin-bottom: 8px; }
+.whyfoot { margin-top: 10px; max-width: 90ch; }
 .empty { padding: 28px 14px; color: var(--muted); text-align: center; line-height: 1.5; }
 footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85ch; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
@@ -99,6 +122,8 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
       <span id="toast" role="status"></span>
       <label class="radius" title="Search radius around the centre system">Radius
         <input id="radius" type="number" min="1" max="1000" step="1" inputmode="decimal"> ly</label>
+      <label class="radius" title="Show only factions that are player factions"><input id="playeronly" type="checkbox">
+        Player factions only</label>
       <button id="recentre" type="button" hidden></button>
       <select id="switch" aria-label="Dashboard" hidden></select>
     </div>
@@ -129,7 +154,7 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
 (function () {
   'use strict';
   var NAME = new URLSearchParams(location.search).get('d');
-  var S = { cfg: null, labels: {}, dashboards: [], data: null, status: null, connected: false, sig: {}, changed: {}, loaded: false };
+  var S = { cfg: null, labels: {}, dashboards: [], data: null, status: null, connected: false, sig: {}, changed: {}, loaded: false, open: {} };
   var $ = function (id) { return document.getElementById(id); };
 
   function esc(t) {
@@ -205,9 +230,11 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     switch (col) {
       case 'system':
         var m1 = (typeof r.distance_ly === 'number' ? r.distance_ly.toFixed(0) + ' ly' : '') + (r.population ? ', ' + pop(r.population) + ' pop.' : '');
-        return '<td><div class="sys">' + esc(r.system) + '</div><div class="meta">' + esc(m1) + '</div></td>';
+        return '<td><div class="sys"><a href="https://inara.cz/elite/starsystem/?search=' + encodeURIComponent(r.system) + '" target="_blank" rel="noopener noreferrer">' + esc(r.system) + '</a></div><div class="meta">' + esc(m1) + '</div></td>';
       case 'faction':
-        return '<td><div>' + esc(r.faction) + '</div><div class="meta">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '% influence' : '') + '</div></td>';
+        var tag = S.cfg.filters.player_faction_only ? '' : (r.is_player === true ? '<span class="tag player">PLAYER</span>'
+                  : r.is_player === false ? '<span class="tag">NPC</span>' : '<span class="tag" title="Player status not checked yet">?</span>');
+        return '<td><div>' + esc(r.faction) + tag + '</div><div class="meta">' + (typeof r.influence_pct === 'number' ? r.influence_pct.toFixed(1) + '% influence' : '') + '</div></td>';
       case 'economy':
         return '<td>' + esc(r.economy || '') + (r.second_economy ? '<div class="meta">' + esc(r.second_economy) + '</div>' : '') + '</td>';
       case 'pending_for':
@@ -221,6 +248,13 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
         if (r.war) chips.push('<span class="chip war">War in system</span>');
         if (S.changed[r.key] && now - S.changed[r.key] < 300000) chips.push('<span class="chip changed">changed</span>');
         return '<td><div class="chips">' + chips.join('') + '</div><div class="meta">Main state: ' + esc(r.main_state || 'None') + '</div></td>';
+      case 'expansion_chance':
+        var x = r.expansion;
+        if (!x) return '<td><span class="meta">' + (r.kind === 'pending' ? 'not estimated' : 'n/a') + '</span></td>';
+        if (x.error) return '<td><span class="meta">Estimate failed</span></td>';
+        var lab = String(x.label || '').toLowerCase();
+        return '<td><span class="chip ' + esc(lab) + '">' + esc(x.label) + ' ' + Math.round(x.probability * 100) + '%</span>' +
+               '<span class="caret" aria-hidden="true">' + (S.open[r.key] ? '▲' : '▼') + '</span></td>';
       case 'last_update':
         return '<td class="num age" data-last="' + i + '"></td>';
       case 'distance':
@@ -233,11 +267,28 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     return '<td></td>';
   }
 
+  function detailRow(r, ncols) {
+    var x = r.expansion, items = (x.rules || []).map(function (u) {
+      return '<li><span class="res ' + esc(u.result) + '">' + esc(u.result) + '</span><div><span class="t">' + esc(u.title) +
+             '</span><span class="conf">' + esc(u.confidence) + '</span><div class="d">' + esc(u.detail) + '</div></div></li>';
+    }).join('');
+    return '<tr class="detail" data-detail="' + esc(r.key) + '"><td colspan="' + ncols + '"><div class="whyhead">' + esc(x.label) + ', about ' +
+           Math.round(x.probability * 100) + '% for ' + esc(r.faction) + ' in ' + esc(r.system) + '</div><ul class="why">' + items +
+           '</ul><div class="whyfoot">' + esc(x.disclaimer) + ' Rules version ' + esc(x.ruleset_version) + '.</div></td></tr>';
+  }
+  function toggleRow(tr) {
+    var r = ((S.data && S.data.rows) || [])[+tr.getAttribute('data-row')];
+    if (!r || !r.expansion || r.expansion.error) return;
+    if (S.open[r.key]) delete S.open[r.key]; else S.open[r.key] = true;
+    render();
+  }
+
   function render() {
     if (!S.cfg) return;
     var cols = S.cfg.columns, now = Date.now();
     document.title = S.cfg.title;
     if (document.activeElement !== $('radius')) $('radius').value = S.cfg.radius_ly;
+    $('playeronly').checked = !!S.cfg.filters.player_faction_only;
     $('title').textContent = S.cfg.title;
     $('sub').textContent = subtitle();
     $('head').innerHTML = cols.map(function (c) { return '<th>' + esc(S.labels[c] || c) + '</th>'; }).join('');
@@ -249,7 +300,10 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     });
     if (S.data) S.loaded = true;
     $('rows').innerHTML = rows.length ? rows.map(function (r, i) {
-      return '<tr data-row="' + i + '">' + cols.map(function (c) { return cell(c, r, i, now); }).join('') + '</tr>';
+      var exp = r.expansion && !r.expansion.error;
+      return '<tr data-row="' + i + '"' + (exp ? ' data-exp tabindex="0" aria-expanded="' + !!S.open[r.key] + '"' : '') + '>' +
+             cols.map(function (c) { return cell(c, r, i, now); }).join('') + '</tr>' +
+             (exp && S.open[r.key] ? detailRow(r, cols.length) : '');
     }).join('') : '<tr><td class="empty" colspan="' + cols.length + '">' + esc(emptyText()) + '</td></tr>';
     renderStatus();
     tick();
@@ -297,6 +351,15 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (x) { if (x.ok) toast('Radius set to ' + x.j.radius_ly + ' ly'); else { toast(x.j.error); inp.value = S.cfg.radius_ly; } })
       .catch(function () { toast('Could not reach the Recce server.'); });
+  }
+  function setPlayerOnly() {
+    var box = $('playeronly');
+    box.disabled = true;
+    fetch('/api/player-only?d=' + encodeURIComponent(NAME) + '&on=' + (box.checked ? 1 : 0), { method: 'POST', headers: { 'X-Recce': '1' } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (x) { if (x.ok) toast(x.j.player_faction_only ? 'Showing player factions only' : 'Showing all factions'); else { toast(x.j.error); box.checked = S.cfg.filters.player_faction_only; } })
+      .catch(function () { toast('Could not reach the Recce server.'); box.checked = S.cfg.filters.player_faction_only; })
+      .then(function () { box.disabled = false; });
   }
   function toast(t) {
     $('toast').textContent = t;
@@ -387,8 +450,18 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
 
   $('recentre').addEventListener('click', recentre);
   $('radius').addEventListener('change', setRadius);
+  $('playeronly').addEventListener('change', setPlayerOnly);
   $('radius').addEventListener('keydown', function (e) { if (e.key === 'Enter') setRadius(); });
   $('switch').addEventListener('change', function () { location.search = '?d=' + encodeURIComponent(this.value); });
+  $('rows').addEventListener('click', function (e) {
+    var tr = e.target.closest ? e.target.closest('tr[data-exp]') : null;
+    if (tr) toggleRow(tr);
+  });
+  $('rows').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var tr = e.target.matches && e.target.matches('tr[data-exp]') ? e.target : null;
+    if (tr) { e.preventDefault(); toggleRow(tr); var k = tr.getAttribute('data-row'); var n = document.querySelector('tr[data-row="' + k + '"]'); if (n) n.focus(); }
+  });
   setInterval(tick, 1000);
 
   if (!NAME) { location.replace('/'); return; }
