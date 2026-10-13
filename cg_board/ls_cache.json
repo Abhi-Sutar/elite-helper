@@ -27,7 +27,8 @@
   "ls": 108
  },
  "Col 285 Sector GU-I b25-2|Nigh Depot": {
-  "ls": 326
+  "ls": 327,
+  "type": "Ocellus Starport"
  },
  "Col 285 Sector RP-D c13-6|Vulcan Ironworks": {
   "ls": 335
@@ -1255,5 +1256,205 @@
  },
  "Col 285 Sector NL-F b27-0|L0G-3PZ": {
   "ls": 1661
+ },
+ "Col 285 Sector GN-H c11-9|Sherwood Gateway": {
+  "ls": 370,
+  "type": "Dodec"
+ },
+ "Col 285 Sector GN-H c11-9|Cahill Depot": {
+  "ls": 680,
+  "type": "Outpost"
+ },
+ "Col 285 Sector GN-H c11-9|Robson Enterprise": {
+  "ls": 1180,
+  "type": "Coriolis Starport"
+ },
+ "Col 285 Sector GN-H c11-9|Planetary Construction Site: Hara Botanical Estate": {
+  "ls": 1181,
+  "type": "Outpost"
+ },
+ "Col 285 Sector GN-H c11-9|Klein Vision": {
+  "ls": 1180,
+  "type": "Planetary Outpost"
+ },
+ "Col 285 Sector GN-H c11-9|Planetary Construction Site: Myeni Command Installation": {
+  "ls": 4879,
+  "type": null
+ },
+ "Col 285 Sector GN-H c11-9|Hand Gateway": {
+  "ls": 4884,
+  "type": "Outpost"
+ },
+ "Col 285 Sector VG-O b22-3|Bryusov's Pride": {
+  "ls": 367,
+  "type": "Asteroid base"
+ },
+ "Col 285 Sector VG-O b22-3|Steinmuller Depot": {
+  "ls": 2994,
+  "type": "Outpost"
+ },
+ "98 Kappa Virginis|Shahabud-dinGhori Beacon": {
+  "ls": 984,
+  "type": "Coriolis Starport"
+ },
+ "Col 285 Sector GU-I b25-2|N8X-22Z": {
+  "ls": 0,
+  "type": "Fleet Carrier"
+ },
+ "Col 285 Sector GU-I b25-2|N8X-34K": {
+  "ls": 0,
+  "type": "Fleet Carrier"
+ },
+ "Col 285 Sector GU-I b25-2|V5H-50B": {
+  "ls": 327,
+  "type": "Fleet Carrier"
+ },
+ "Col 285 Sector GU-I b25-2|Biermann Vista": {
+  "ls": 599,
+  "type": "Outpost"
+ },
+ "Col 285 Sector GU-I b25-2|Broken": {
+  "ls": 1119,
+  "type": "Dodec"
+ },
+ "Col 285 Sector GU-I b25-2|Won Works": {
+  "ls": 1119,
+  "type": "Planetary Outpost"
+ },
+ "Col 285 Sector GU-I b25-2|Baker Manufacturing Forge": {
+  "ls": 1119,
+  "type": "Odyssey Settlement"
+ },
+ "Col 285 Sector GU-I b25-2|TNQ-24L": {
+  "ls": 1929,
+  "type": "Fleet Carrier"
+ },
+ "Col 285 Sector GU-I b25-2|Picard Gateway": {
+  "ls": 8398,
+  "type": "Outpost"
+ },
+ "Col 285 Sector ML-F b27-0|G0Y-4KB": {
+  "ls": 0,
+  "type": "Fleet Carrier"
+ },
+ "Col 285 Sector ML-F b27-0|Capital City": {
+  "ls": 33,
+  "type": "Dodec"
+ },
+ "Col 285 Sector RP-D c13-2|Mikey Walsh Goon Stop": {
+  "ls": 1541,
+  "type": "Dodec"
+ },
+ "Col 285 Sector IP-I b25-4|Magyarok Otthona - Home Of The Huns": {
+  "ls": 13,
+  "type": "Coriolis Starport"
+ },
+ "Col 285 Sector IP-I b25-4|Piano Hub": {
+  "ls": 13,
+  "type": "Outpost"
+ },
+ "Col 285 Sector IP-I b25-4|Penfold Creations": {
+  "ls": 40,
+  "type": "Planetary Outpost"
+ },
+ "Col 285 Sector IP-I b25-4|Boss Enterprise": {
+  "ls": 1200,
+  "type": "Outpost"
+ },
+ "Col 285 Sector CI-M b23-2|Orbital Construction Site: Garay Vista": {
+  "ls": 9,
+  "type": null
+ },
+ "Col 285 Sector CI-M b23-2|Planetary Construction Site: Figueroa Analysis Site": {
+  "ls": 9,
+  "type": null
+ },
+ "Col 285 Sector CI-M b23-2|Planetary Construction Site: Verquerre Botanical Site": {
+  "ls": 9,
+  "type": null
+ },
+ "Col 285 Sector CI-M b23-2|Planetary Construction Site: Grinchenko Drilling Rigs": {
+  "ls": 9,
+  "type": null
+ },
+ "Col 285 Sector CI-M b23-2|Ozanne City": {
+  "ls": 9,
+  "type": "Ocellus Starport"
+ },
+ "Col 285 Sector CI-M b23-2|Gent Settlement": {
+  "ls": 24,
+  "type": "Outpost"
+ },
+ "Col 285 Sector CI-M b23-2|Planetary Construction Site: Baudelaire Military Installation": {
+  "ls": 696,
+  "type": null
+ },
+ "Col 285 Sector UV-B c14-13|Kosai's Progress": {
+  "ls": 534,
+  "type": null
+ },
+ "Col 285 Sector UV-B c14-13|Planetary Construction Site: Lai Mineralogic Territory": {
+  "ls": 534,
+  "type": null
+ },
+ "Col 285 Sector UV-B c14-13|Planetary Construction Site: Moulin Research Institution": {
+  "ls": 534,
+  "type": null
+ },
+ "Col 285 Sector UV-B c14-13|Tanaka Survey": {
+  "ls": 534,
+  "type": "Planetary Outpost"
+ },
+ "Col 285 Sector UV-B c14-13|Nifelheim": {
+  "ls": 534,
+  "type": "Coriolis Starport"
+ },
+ "Col 285 Sector UV-B c14-13|Planetary Construction Site: Pierce Enterprise": {
+  "ls": 534,
+  "type": null
+ },
+ "Col 285 Sector UV-B c14-13|Planetary Construction Site: Benedetti Drilling Territory": {
+  "ls": 534,
+  "type": null
+ },
+ "Col 285 Sector UV-B c14-13|Alfheim Terminal": {
+  "ls": 739,
+  "type": "Planetary Outpost"
+ },
+ "HIP 70118|Q8W-77W": {
+  "ls": 0,
+  "type": "Fleet Carrier"
+ },
+ "HIP 70118|Corograsch Legacy": {
+  "ls": 1820,
+  "type": "Coriolis Starport"
+ },
+ "HIP 70118|Dex Aie Refinery": {
+  "ls": 4423,
+  "type": "Odyssey Settlement"
+ },
+ "HIP 70118|S.a.c. Francis Vision": {
+  "ls": 4437,
+  "type": "Odyssey Settlement"
+ },
+ "HIP 70118|Ramraid V Television": {
+  "ls": 4446,
+  "type": "Ocellus Starport"
+ },
+ "Col 285 Sector HU-I b25-0|Leguin City": {
+  "ls": 65,
+  "type": "Coriolis Starport"
+ },
+ "Col 285 Sector FU-I b25-3|Drake Laboratory": {
+  "ls": 794,
+  "type": "Outpost"
+ },
+ "Col 285 Sector FU-I b25-3|Cassini Vista": {
+  "ls": 1721,
+  "type": "Coriolis Starport"
+ },
+ "Col 285 Sector SP-D c13-13|Kudo's Folly": {
+  "ls": 1572,
+  "type": "Coriolis Starport"
  }
 }
