@@ -1,0 +1,45 @@
+{
+  "kind": "cg",
+  "name": "cg",
+  "title": "CG supply board",
+  "refresh_seconds": 30,
+  "max_age_hours": 72,
+  "target": {
+    "name": "Your delivery station",
+    "system": "Your delivery system"
+  },
+  "ship": {
+    "name": "Your ship",
+    "laden_ly": 31.0,
+    "unladen_ly": 45.0,
+    "cargo": 1000
+  },
+  "station_types": [
+    "Coriolis",
+    "Orbis",
+    "Ocellus",
+    "Bernal",
+    "Dodec",
+    "AsteroidBase"
+  ],
+  "min_stock": 1,
+  "lookup_ls": true,
+  "stale_after_minutes": 60,
+  "tabs": [
+    {
+      "key": "super",
+      "label": "Superconductors",
+      "commodity": "superconductors",
+      "cg_price": 65510,
+      "max_jumps": 4,
+      "min_stock": 1000
+    },
+    {
+      "key": "semi",
+      "label": "Semiconductors",
+      "commodity": "semiconductors",
+      "cg_price": 10840,
+      "max_jumps": 2
+    }
+  ]
+}
