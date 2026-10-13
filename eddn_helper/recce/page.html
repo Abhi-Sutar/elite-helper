@@ -79,6 +79,8 @@ tbody tr:last-child td { border-bottom: 0; }
 tr.match td { background: var(--good-soft); }
 td.num, .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sys { font-weight: 600; }
+.sys a { color: inherit; text-decoration: none; }
+.sys a:hover { text-decoration: underline; }
 .meta { color: var(--muted); font-size: 0.78rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .age.fresh { color: var(--good); } .age.old { color: var(--crit); font-weight: 600; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -228,7 +230,7 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 85
     switch (col) {
       case 'system':
         var m1 = (typeof r.distance_ly === 'number' ? r.distance_ly.toFixed(0) + ' ly' : '') + (r.population ? ', ' + pop(r.population) + ' pop.' : '');
-        return '<td><div class="sys">' + esc(r.system) + '</div><div class="meta">' + esc(m1) + '</div></td>';
+        return '<td><div class="sys"><a href="https://inara.cz/elite/starsystem/?search=' + encodeURIComponent(r.system) + '" target="_blank" rel="noopener noreferrer">' + esc(r.system) + '</a></div><div class="meta">' + esc(m1) + '</div></td>';
       case 'faction':
         var tag = S.cfg.filters.player_faction_only ? '' : (r.is_player === true ? '<span class="tag player">PLAYER</span>'
                   : r.is_player === false ? '<span class="tag">NPC</span>' : '<span class="tag" title="Player status not checked yet">?</span>');
