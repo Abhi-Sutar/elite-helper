@@ -8,8 +8,7 @@ from .database import insert_for
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, FactionInfo, Market, MarketUpdate, Meta,
                      PriceHistory, Station, StationSync, System, SystemUpdate)
 
-RETENTION_DAYS = 30             # commodity data (history and stale markets)
-FACTION_RETENTION_DAYS = 365    # faction history
+RETENTION_DAYS = 30             # commodity price history and per-commodity snapshot rows (a market's last report is kept)
 EVENT_RETENTION_DAYS = 365      # market_update / system_update (one small row per EDDN message)
 HISTORY_MIN_INTERVAL_S = 3600   # thresholded mode: at most one history row per commodity per station per hour
 PRICE_CHANGE_PCT = 0.05         # thresholded mode: record when buy/sell price moves by >= 5%
@@ -197,9 +196,6 @@ def upsert_system(session, s, factions, source="eddn", uploader="", software="")
 
     if factions is None:
         return wrote
-    if ts < datetime.now(timezone.utc) - timedelta(days=FACTION_RETENTION_DAYS):
-        return wrote  # would be pruned straight away
-
     if fac_ts is not None and ts < fac_ts:  # late upload: snapshot stays as it is
         n = 0
         if mode == "full":
@@ -301,11 +297,11 @@ def upsert_market(session, m, prices, source="eddn", uploader="", software=""):
     (an interim state between two readings can be missed).
     """
     ts = to_dt(m["timestamp"])
-    if ts < datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS):
-        return False  # would be pruned straight away; some clients keep re-uploading very old market data
     mid = m["market_id"]
     mode = history_mode(session)
     existing = session.execute(select(Market.updated_at).where(Market.market_id == mid)).scalar_one_or_none()
+    if ts < datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS) and existing is not None and ts < existing:
+        return False  # old and not the market's latest report: nothing to keep (some clients re-upload old data)
     if existing is not None and ts < existing:
         n = 0
         if mode == "full":
@@ -437,28 +433,28 @@ def history_is_hypertable(session, table="price_history"):
 
 def prune(session, days=RETENTION_DAYS):
     """
-    Delete commodity data older than `days`: history rows, and markets (with prices) not updated since.
-    On a TimescaleDB hypertable the retention policy drops expired chunks, so history is left to it.
+    Delete commodity data older than `days`: price history rows and per-commodity snapshot rows. Markets are kept
+    for ever, and so is each market's last report (the snapshot rows seen at markets.updated_at), however old.
+    Systems, factions, faction history and the name tables are never pruned; the update logs expire after a year
+    except the newest row of each market / system.
+    On a TimescaleDB hypertable the retention policy drops expired price history chunks, so that is left to it.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    stale = select(Market.market_id).where(Market.updated_at < cutoff)
     out = {}
     if history_is_hypertable(session, "price_history"):
         out["price_history"] = 0
     else:
         out["price_history"] = session.execute(delete(PriceHistory.__table__).where(
-            (PriceHistory.ts < cutoff) | PriceHistory.market_id.in_(stale))).rowcount
-    faction_cutoff = datetime.now(timezone.utc) - timedelta(days=FACTION_RETENTION_DAYS)
-    out["faction_history"] = 0 if history_is_hypertable(session, "faction_history") else session.execute(
-        delete(FactionHistory.__table__).where(FactionHistory.ts < faction_cutoff)).rowcount
+            PriceHistory.ts < cutoff)).rowcount
     event_cutoff = datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
-    for model in (MarketUpdate, SystemUpdate):
-        name = model.__tablename__
-        out[name] = 0 if history_is_hypertable(session, name) else session.execute(
-            delete(model.__table__).where(model.ts < event_cutoff)).rowcount
+    for model, key in ((MarketUpdate, "market_id"), (SystemUpdate, "system_id64")):
+        t = model.__table__
+        other = t.alias()
+        newest = select(func.max(other.c.ts)).where(other.c[key] == t.c[key]).scalar_subquery()
+        out[t.name] = session.execute(delete(t).where((t.c.ts < event_cutoff) & (t.c.ts < newest))).rowcount
+    latest = select(Market.updated_at).where(Market.market_id == CommodityPrice.market_id).scalar_subquery()
     out["commodity_prices"] = session.execute(delete(CommodityPrice.__table__).where(
-        CommodityPrice.market_id.in_(stale) | (CommodityPrice.seen_at < cutoff))).rowcount
-    out["markets"] = session.execute(delete(Market.__table__).where(Market.updated_at < cutoff)).rowcount
+        (CommodityPrice.seen_at < cutoff) & (CommodityPrice.seen_at < latest))).rowcount
     session.commit()
     return out
 
