@@ -578,6 +578,7 @@ class EconomySharesTests(unittest.TestCase):
         self.feed(None)
         res = queries.station_market(self.s, "Split Port")
         self.assertEqual([x["name"] for x in res["economy_shares"]], ["Industrial", "Agri"])
+        self.assertEqual(res["economies"], ["Industrial", "Agri"])      # the names are kept in step with the shares
 
     def test_names_only_fallback_in_cli(self):
         self.assertEqual(cli.fmt_economies({"economies": ["Extraction"], "economy_shares": []}), "Extraction")
