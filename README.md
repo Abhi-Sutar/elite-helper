@@ -19,7 +19,9 @@ PostgreSQL/TimescaleDB later — the code is SQLAlchemy 2.0 + Alembic and switch
   items, how many history rows it produced) = the exact **traffic** of each station and system.
 - The **time series** (`price_history`, `faction_history`) stores a row only when something differs from the last
   logged state (see "History mode"), so nothing is lost but identical re-uploads are not stored 180 times.
-  Commodity data older than 30 days (faction history 1 year, update log 1 year) is pruned by the listener or `prune`.
+  Commodity price history older than 30 days (and snapshot rows older than that, except each market's last report) and
+  the update logs older than 1 year (except the newest row of each market and system) are pruned by the listener or `prune`. Systems, factions, faction history, stations,
+  commodity names and markets are kept for ever.
 
 Every query result carries the **age** of its data. `--live` (CLI) / `live_lookup` (MCP) fetches a system or
 station from [EDSM](https://www.edsm.net) when local data is missing or stale.
@@ -82,7 +84,9 @@ exports every point. Timeline intervals start at the stored row where a value ap
 is gone (`ended_at`, empty while still present); `last_seen` comes from the update log; a `present=false` row means
 the faction left the system.
 
-Retention: market history 30 days; faction history 1 year; current snapshots always replaced in place. History starts
+Retention: market price history 30 days; faction history for ever; update logs 1 year (newest row per market/system kept); markets and the last report of
+ each market (its snapshot rows) for ever, so an old station still shows its last known prices with their age;
+ current snapshots always replaced in place. History starts
 when the listener first saw a station or system (EDDN keeps nothing), and rows written before the 0003 migration
 have no mean price, brackets, happiness or state lists.
 

@@ -139,6 +139,7 @@ class WhereAmITests(unittest.TestCase):
         from helpers import new_session
         from eddn_helper import parsers, store
         session = new_session()
+        self.addCleanup(lambda: (session.close(), session.get_bind().dispose()))  # an open transaction blocks the next PostgreSQL test's table wipe
         store.apply_parsed(session, parsers.parse_message({
             "$schemaRef": "https://eddn.edcd.io/schemas/journal/1",
             "header": {"uploaderID": "u", "softwareName": "t", "softwareVersion": "1", "gatewayTimestamp": "2026-10-11T10:00:00Z"},

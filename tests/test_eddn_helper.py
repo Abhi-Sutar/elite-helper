@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from eddn_helper import parsers, queries, store
 from eddn_helper.models import CommodityPrice, Market, PriceHistory
@@ -105,9 +105,10 @@ class StoreQueryTests(unittest.TestCase):
         m = queries.station_market(self.s, "hub")
         self.assertEqual(m["commodities"][0]["buy_price"], 9000)
 
-    def test_market_older_than_retention_is_not_stored(self):
-        self.assertFalse(self.feed(commodity_msg(8, "Old", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * 40))))
-        self.assertIsNone(self.s.get(Market, 8))
+    def test_unknown_market_older_than_retention_is_stored_but_not_a_superseded_report(self):
+        self.assertTrue(self.feed(commodity_msg(8, "Old", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * 40))))
+        self.assertIsNotNone(self.s.get(Market, 8))
+        self.assertFalse(self.feed(commodity_msg(8, "Old", "Sol", [("gold", 2, 1, 0, 0)], when=ts(24 * 50))))
 
     def test_market_links_to_system(self):
         self.feed(commodity_msg(5, "Hub", "Sol", [("gold", 9000, 50, 0, 0)]))
@@ -152,12 +153,19 @@ class StoreQueryTests(unittest.TestCase):
             self.s.commit()
             store.prune(self.s, 30)
             self.assertEqual(self.s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 1)
-        # stale markets are pruned with their prices
+        # a stale market keeps its last report; only older snapshot rows and history go
         self.s.get(Market, 7).updated_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        self.s.execute(update(CommodityPrice).values(seen_at=datetime(2000, 1, 1, tzinfo=timezone.utc)))
         self.s.commit()
         store.prune(self.s, 30)
-        self.assertEqual(self.s.execute(select(func.count()).select_from(CommodityPrice)).scalar_one(), 0)
-        self.assertEqual(self.s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 0)
+        self.assertIsNotNone(self.s.get(Market, 7))
+        self.assertEqual(self.s.execute(select(func.count()).select_from(CommodityPrice)).scalar_one(), 1)
+
+    def test_prune_drops_snapshot_rows_superseded_by_a_newer_report(self):
+        self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0), ("tea", 2, 2, 0, 0)], when=ts(24 * 40)))
+        self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 5, 1, 0, 0)], when=ts(1)))
+        store.prune(self.s, 30)
+        self.assertEqual([c["commodity"] for c in queries.station_market(self.s, "hub")["commodities"]], ["gold"])
 
     def test_commodity_name_normalization(self):
         self.assertEqual(queries.norm_commodity("Liquid Oxygen"), "liquidoxygen")
