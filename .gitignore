@@ -251,3 +251,4 @@ edsm-cache.json
 # Claude Code: personal project notes and local settings
 CLAUDE.md
 .claude/settings.local.json
+pgtests.log
