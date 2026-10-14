@@ -73,6 +73,20 @@ def parse_message(obj):
     return parsed
 
 
+def economy_shares(entries):
+    """EDDN `economies` -> [{'name', 'proportion'}], proportion None when missing or not a number."""
+    out = []
+    for e in entries if isinstance(entries, list) else []:
+        if not isinstance(e, dict) or not e.get("name"):
+            continue
+        try:
+            prop = round(float(e["proportion"]), 4)
+        except (KeyError, TypeError, ValueError):
+            prop = None
+        out.append({"name": e["name"], "proportion": prop})
+    return out
+
+
 def parse_commodity(msg):
     ts = norm_ts(msg.get("timestamp"))
     market_id = _int(msg.get("marketId"))
@@ -95,11 +109,12 @@ def parse_commodity(msg):
     if not prices:
         return None
     stype = msg.get("stationType")
+    shares = economy_shares(msg.get("economies"))
     market = {
         "market_id": market_id, "station": station, "system_name": system, "timestamp": ts,
         "station_type": stype,
         "is_carrier": stype == "FleetCarrier" or bool(CARRIER_RE.match(station)),
-        "economies": [e.get("name") for e in msg.get("economies", []) if isinstance(e, dict)],
+        "economies": [e["name"] for e in shares], "economy_shares": shares,
         "prohibited": msg.get("prohibited") or [],
     }
     return {"kind": "market", "market": market, "prices": prices}

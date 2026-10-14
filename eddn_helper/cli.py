@@ -240,6 +240,14 @@ def cmd_system(args, session):
     emit(args, res, human)
 
 
+def fmt_economies(r):
+    """'Industrial 80% / Agri 20%' when proportions are known, else the plain names."""
+    shares = [s for s in r.get("economy_shares") or [] if s.get("proportion") is not None]
+    if shares:
+        return " / ".join(f"{s['name']} {s['proportion'] * 100:.0f}%" for s in shares)
+    return "/".join(r["economies"]) or "-"
+
+
 def cmd_economy(args, session):
     res = live.system_economy(session, args.name, args.live, args.max_age_hours)
 
@@ -252,7 +260,7 @@ def cmd_economy(args, session):
             print("(stations: only those seen in market uploads - run `refresh-stations` for the full EDSM list)")
         table(d["stations"], [("Station", "station"), ("Type", lambda r: r["station_type"] or "-"),
                               ("Body", lambda r: r["body"] or "-"),
-                              ("Economies", lambda r: "/".join(r["economies"]) or "-"),
+                              ("Economies", fmt_economies),
                               ("Controlled by", lambda r: r["controlling_faction"] or "-"),
                               ("Prices", lambda r: fmt_age(r["market_age_hours"]) if r["has_prices"] else "-")])
         if d.get("stations_live"):
@@ -452,7 +460,7 @@ def cmd_market(args, session):
             for c in d["candidates"]:
                 print(f"  {c['station']} ({c['system']})")
             return
-        print(f"{d['station']} ({d['system']}) {d['station_type'] or ''}  economies={', '.join(d['economies'])}  "
+        print(f"{d['station']} ({d['system']}) {d['station_type'] or ''}  economies={fmt_economies(d)}  "
               f"age={fmt_age(d['age_hours'])}  source={d['source']}")
         rows = [c for c in d["commodities"] if (c["stock"] or c["demand"]) and not c["stale"]]
         hidden = sum(1 for c in d["commodities"] if c["stale"])

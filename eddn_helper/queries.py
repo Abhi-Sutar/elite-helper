@@ -284,8 +284,8 @@ def station_market(session, station, system=None):
     stale_before = m.updated_at - COMMODITY_FRESH_WINDOW
     return {"found": True, "station": m.station, "system": m.system_name, "market_id": m.market_id,
             "station_type": m.station_type, "is_carrier": bool(m.is_carrier),
-            "economies": m.economies or [], "prohibited": m.prohibited or [],
-            "updated_at": iso(m.updated_at), "age_hours": age_hours(m.updated_at), "source": m.source,
+            "economies": m.economies or [], "economy_shares": m.economy_shares or [],
+            "prohibited": m.prohibited or [], "updated_at": iso(m.updated_at), "age_hours": age_hours(m.updated_at), "source": m.source,
             "commodities": [{"commodity": sym, "buy_price": p.buy_price, "sell_price": p.sell_price,
                              "mean_price": p.mean_price, "stock": p.stock, "demand": p.demand,
                              "stock_bracket": p.stock_bracket, "demand_bracket": p.demand_bracket,
@@ -891,7 +891,8 @@ def _merge_economies(*lists):
 def _local_station(m):
     return {"station": m.station, "station_type": m.station_type, "category": station_category(m.station_type),
             "is_carrier": bool(m.is_carrier), "body": None, "distance_to_arrival_ls": None,
-            "economies": list(m.economies or []), "controlling_faction": None, "has_prices": True,
+            "economies": list(m.economies or []), "economy_shares": list(m.economy_shares or []),
+            "controlling_faction": None, "has_prices": True,
             "has_market": True, "has_shipyard": None, "has_outfitting": None, "market_id": m.market_id,
             "market_age_hours": age_hours(m.updated_at), "fetched_age_hours": None, "source": "eddn"}
 
@@ -899,7 +900,7 @@ def _local_station(m):
 def _stored_station(st):
     return {"station": st.name, "station_type": st.station_type, "category": station_category(st.station_type),
             "is_carrier": False, "body": st.body, "distance_to_arrival_ls": st.distance_to_arrival_ls,
-            "economies": _merge_economies([st.economy], [st.second_economy]),
+            "economies": _merge_economies([st.economy], [st.second_economy]), "economy_shares": [],
             "controlling_faction": st.controlling_faction, "has_prices": False, "has_market": bool(st.has_market),
             "has_shipyard": bool(st.has_shipyard), "has_outfitting": bool(st.has_outfitting), "market_id": st.market_id,
             "market_age_hours": None, "fetched_age_hours": age_hours(st.fetched_at), "source": "edsm"}
@@ -937,6 +938,7 @@ def _system_stations(session, system_ids=None, include_carriers=False):
             x = merged[key]
             x.update(has_prices=True, market_age_hours=lst["market_age_hours"], source="both",
                      economies=_merge_economies(x["economies"], lst["economies"]),
+                     economy_shares=lst["economy_shares"],
                      station_type=x["station_type"] or lst["station_type"])
         stations = sorted(merged.values(), key=lambda x: (x["is_carrier"], x["station"].lower()))
         out[sid] = {"known": sid in synced, "fetched_age_hours": age_hours(synced.get(sid)), "stations": stations}
@@ -1317,7 +1319,7 @@ def faction_stations(session, faction, system=None, near=None, ly=None, station_
             continue
         rows.append({"system": sysrow.name, "distance_ly": round(d, 1) if d is not None else None,
                      **{k: item[k] for k in ("station", "station_type", "category", "body", "economies",
-                                              "distance_to_arrival_ls", "has_market", "fetched_age_hours")}})
+                                              "economy_shares", "distance_to_arrival_ls", "has_market", "fetched_age_hours")}})
     rows.sort(key=lambda r: (r["distance_ly"] is None, r["distance_ly"] or 0, r["system"], r["station"]))
     return {"faction": faction, "count": len(rows), "systems": len({r["system"] for r in rows}), "stations": rows[:limit],
             "note": "only systems whose stations were fetched from EDSM (refresh-stations) are covered"}

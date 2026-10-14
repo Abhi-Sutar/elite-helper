@@ -535,5 +535,54 @@ class LiveEconomyTests(unittest.TestCase):
         self.assertIn("boom", d["live_error"])
 
 
+class EconomySharesTests(unittest.TestCase):
+    """EDDN economy proportions are kept next to the plain name list."""
+
+    def setUp(self):
+        self.s = new_session()
+        self.addCleanup(self.close)
+
+    def close(self):
+        engine = self.s.get_bind()
+        self.s.close()
+        engine.dispose()
+
+    def feed(self, shares):
+        msg = market(20, "Split Port", "Sol", [])
+        if shares is None:
+            del msg["message"]["economies"]
+        else:
+            msg["message"]["economies"] = shares
+        store.apply_parsed(self.s, parsers.parse_message(msg))
+        self.s.commit()
+
+    def test_parser_keeps_order_and_proportions(self):
+        msg = market(21, "P", "Sol", [])
+        msg["message"]["economies"] = [{"name": "Industrial", "proportion": 0.80004}, {"name": "Agri", "proportion": 0.2},
+                                       {"name": "Bad", "proportion": "x"}, {"proportion": 1}, "junk"]
+        m = parsers.parse_message(msg)["market"]
+        self.assertEqual(m["economies"], ["Industrial", "Agri", "Bad"])
+        self.assertEqual(m["economy_shares"], [{"name": "Industrial", "proportion": 0.8}, {"name": "Agri", "proportion": 0.2},
+                                               {"name": "Bad", "proportion": None}])
+
+    def test_stored_and_exposed(self):
+        self.feed([{"name": "Industrial", "proportion": 0.7}, {"name": "Agri", "proportion": 0.3}])
+        res = queries.station_market(self.s, "Split Port")
+        self.assertEqual(res["economies"], ["Industrial", "Agri"])
+        self.assertEqual(res["economy_shares"], [{"name": "Industrial", "proportion": 0.7},
+                                                 {"name": "Agri", "proportion": 0.3}])
+        self.assertEqual(cli.fmt_economies(res), "Industrial 70% / Agri 30%")
+
+    def test_report_without_shares_keeps_the_old_ones(self):
+        self.feed([{"name": "Industrial", "proportion": 0.7}, {"name": "Agri", "proportion": 0.3}])
+        self.feed(None)
+        res = queries.station_market(self.s, "Split Port")
+        self.assertEqual([x["name"] for x in res["economy_shares"]], ["Industrial", "Agri"])
+
+    def test_names_only_fallback_in_cli(self):
+        self.assertEqual(cli.fmt_economies({"economies": ["Extraction"], "economy_shares": []}), "Extraction")
+        self.assertEqual(cli.fmt_economies({"economies": [], "economy_shares": []}), "-")
+
+
 if __name__ == "__main__":
     unittest.main()

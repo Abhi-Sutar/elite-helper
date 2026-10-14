@@ -137,6 +137,7 @@ class Market(Base):
     station_type: Mapped[str | None] = mapped_column(String(40))
     is_carrier: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     economies: Mapped[list | None] = mapped_column(JsonType)
+    economy_shares: Mapped[list | None] = mapped_column(JsonType)   # [{name, proportion}], EDDN only
     prohibited: Mapped[list | None] = mapped_column(JsonType)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
     source: Mapped[str] = mapped_column(String(16), default="eddn", server_default="eddn")
