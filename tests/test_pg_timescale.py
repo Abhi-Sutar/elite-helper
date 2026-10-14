@@ -47,16 +47,15 @@ class TimescaleTests(unittest.TestCase):
         procs = {r[0] for r in self.s.execute(text(
             "SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'price_history'"))}
         self.assertTrue({"policy_compression", "policy_retention"} <= procs, procs)
-        self.assertEqual(migrate.status(self.s.get_bind())["current"], "0004")
+        self.assertEqual(migrate.status(self.s.get_bind())["current"], migrate.SCHEMA_HEAD)
 
-    def test_faction_history_is_a_compressed_hypertable_with_a_one_year_retention_policy(self):
+    def test_faction_history_is_a_compressed_hypertable_without_a_retention_policy(self):
         self.assertTrue(store.history_is_hypertable(self.s, "faction_history"))
         self.assertTrue(self.scalar("SELECT compression_enabled FROM timescaledb_information.hypertables "
                                     "WHERE hypertable_name = 'faction_history'"))
         jobs = {r[0]: r[1] for r in self.s.execute(text(
             "SELECT proc_name, config::text FROM timescaledb_information.jobs WHERE hypertable_name = 'faction_history'"))}
-        self.assertIn("policy_retention", jobs)
-        self.assertIn("1 year", jobs["policy_retention"])
+        self.assertNotIn("policy_retention", jobs)
         self.assertIn("policy_compression", jobs)
 
     def test_faction_observations_states_and_left_markers_on_postgres(self):
@@ -71,12 +70,12 @@ class TimescaleTests(unittest.TestCase):
         t = queries.faction_timeline(self.s, "Sol", "B")
         self.assertEqual(len(t["left_events"]), 1)
 
-    def test_event_logs_are_compressed_hypertables_with_a_one_year_retention_policy(self):
+    def test_event_logs_are_compressed_hypertables_pruned_by_store_prune(self):
         for table in ("market_update", "system_update"):
             self.assertTrue(store.history_is_hypertable(self.s, table), table)
             jobs = {r[0]: r[1] for r in self.s.execute(text(
                 f"SELECT proc_name, config::text FROM timescaledb_information.jobs WHERE hypertable_name = '{table}'"))}
-            self.assertIn("1 year", jobs.get("policy_retention", ""), table)
+            self.assertNotIn("policy_retention", jobs, table)
             self.assertIn("policy_compression", jobs, table)
 
     def test_changes_mode_event_log_and_change_rows_on_postgres(self):

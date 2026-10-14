@@ -127,6 +127,32 @@ class MarketChangeLogTests(ChangesCase):
         self.assertEqual((len(snap), sum(c["stale"] for c in snap)), (40, 0))
         self.assertEqual(self.count(CommodityPrice), 40)
 
+    def test_prune_keeps_the_newest_update_row_per_market_and_system(self):
+        from datetime import datetime, timezone
+        from sqlalchemy import update
+        from eddn_helper import store
+        old = lambda y: datetime(y, 1, 1, tzinfo=timezone.utc)
+        self.feed(commodity_msg(7, "Hub", "Sol", GOLD_TEA, when=at(3)))
+        self.feed(commodity_msg(7, "Hub", "Sol", GOLD_TEA, when=at(2)))
+        self.feed(commodity_msg(8, "Fresh", "Sol", GOLD_TEA, when=at(1)))
+        self.feed(sys_msg([fac("A", 0.5)], at(3)))
+        self.feed(sys_msg([fac("A", 0.6)], at(2)))
+        # push both Hub rows and both system rows a few years back, Hub's newer one still newest
+        rows = self.s.execute(select(MarketUpdate).where(MarketUpdate.market_id == 7)
+                              .order_by(MarketUpdate.ts)).scalars().all()
+        if store.history_is_hypertable(self.s, "market_update"):
+            self.skipTest("rows cannot be moved between chunks by UPDATE; covered by the SQLite run")
+        rows[0].ts, rows[1].ts = old(2000), old(2001)
+        srows = self.s.execute(select(SystemUpdate).order_by(SystemUpdate.ts)).scalars().all()
+        srows[0].ts, srows[1].ts = old(2000), old(2001)
+        self.s.commit()
+        out = store.prune(self.s)
+        self.assertEqual((out["market_update"], out["system_update"]), (1, 1))
+        left = self.s.execute(select(MarketUpdate.market_id, MarketUpdate.ts).order_by(MarketUpdate.market_id)).all()
+        self.assertEqual([(m, t.year) for m, t in left if m == 7], [(7, 2001)])
+        self.assertEqual(self.count(MarketUpdate), 2)
+        self.assertEqual(self.count(SystemUpdate), 1)
+
     def test_a_late_message_only_adds_to_the_update_log(self):
         self.feed(commodity_msg(7, "Hub", "Sol", GOLD_TEA, when=at(1)))
         self.assertTrue(self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=at(5))))

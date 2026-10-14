@@ -103,18 +103,12 @@ class FullFactionHistoryTests(ModeCase):
         self.assertEqual([(r["present"], r["influence_pct"]) for r in rows], [(True, 40.0), (False, None)])
         self.assertEqual(self.n_faction_rows(faction="A"), 3)
 
-    def test_faction_history_older_than_a_year_is_not_stored_and_is_pruned(self):
-        self.feed(sys_msg([fac("A", 0.5)], at(24 * 400)))          # over the 1-year retention: not logged
-        self.assertEqual(self.n_faction_rows(), 0)
-        self.feed(sys_msg([fac("A", 0.5)], at(2)))
-        self.feed(sys_msg([fac("A", 0.5)], at(1)))
-        if store.history_is_hypertable(self.s, "faction_history"):
-            self.skipTest("on a hypertable the retention policy drops old chunks (covered in test_pg_timescale)")
-        oldest = self.s.execute(select(FactionHistory).order_by(FactionHistory.ts)).scalars().first()
-        oldest.ts = datetime(2000, 1, 1, tzinfo=timezone.utc)
-        self.s.commit()
-        self.assertEqual(store.prune(self.s)["faction_history"], 1)
+    def test_faction_history_is_kept_for_ever(self):
+        self.feed(sys_msg([fac("A", 0.5)], at(24 * 400)))
         self.assertEqual(self.n_faction_rows(), 1)
+        self.feed(sys_msg([fac("A", 0.6)], at(1)))
+        store.prune(self.s)
+        self.assertEqual(self.n_faction_rows(), 2)
 
     def test_no_left_marker_on_first_message(self):
         self.feed(sys_msg([fac("A", 1.0)], at(2)))

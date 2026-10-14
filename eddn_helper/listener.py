@@ -149,7 +149,7 @@ def run(db_url=None, relay=RELAY, log_file=None, stats_every_s=60):
                     removed = store.prune(session)
                     linked = store.link_markets_to_systems(session)
                     if any(removed.values()) or linked:
-                        log.info("pruned data older than %sd: %s; linked %s markets to systems",
+                        log.info("pruned expired data (commodity history %sd): %s; linked %s markets to systems",
                                  store.RETENTION_DAYS, removed, linked)
                 except Exception:  # noqa: BLE001
                     log.exception("prune failed")
