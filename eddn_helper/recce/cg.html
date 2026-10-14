@@ -80,8 +80,9 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; max-width: 80
 </div>
 
 <script>
+var NAME = new URLSearchParams(location.search).get("d") || "cg";
 var data = null, active = null;
-try { active = localStorage.getItem("cgTab"); } catch (e) {}
+try { active = localStorage.getItem("cgTab:" + NAME); } catch (e) {}
 
 // Ranking score: supply (saturating in loads) x freshness / trip cost (grows with distance from the star).
 var LOAD_HALF = 25, LS_SCALE = 1500, LS_UNKNOWN = 1500, AGE_GRACE = 6, AGE_HALFLIFE = 12;
@@ -134,7 +135,7 @@ function renderTabs() {
   Array.prototype.forEach.call(host.querySelectorAll(".tab"), function (b) {
     b.addEventListener("click", function () {
       active = b.getAttribute("data-key");
-      try { localStorage.setItem("cgTab", active); } catch (e) {}
+      try { localStorage.setItem("cgTab:" + NAME, active); } catch (e) {}
       render();
     });
   });
@@ -153,7 +154,7 @@ function render() {
     " " + S.name + " jumps " + S.laden_ly + " Ly laden and " + S.unladen_ly + " Ly unladen.";
   document.getElementById("foot").textContent =
     "Stock and price come from player-reported market data, so a row only changes when someone opens that station's market. Data age is how long ago the last report came in. Loads = stock divided by " + fmt(S.cargo) +
-    " t, one full hold. Margin = CG price minus the buy price. Change is stock now minus stock when the station first appeared on this tab (run 'python cg_board/cg_board.py reset' to restart it). Ls is the trip from the arrival star, looked up from EDSM and blank if unknown. Jumps are straight-line distance divided by the ship's range, rounded up: the group heading is laden jumps back to " +
+    " t, one full hold. Margin = CG price minus the buy price. Change is stock now minus stock when the station first appeared on this tab (run 'elite-dash reset " + NAME + "' to restart it). Ls is the trip from the arrival star, looked up from EDSM and blank if unknown. Jumps are straight-line distance divided by the ship's range, rounded up: the group heading is laden jumps back to " +
     cfg.target.name + ", and Jumps out is the unladen trip from " + cfg.target.name + ". TIGHT means the laden count only works if every jump is flown at full range. Score ranks stations inside each jump section: it rises with loads available (saturating) and falls with distance from the star and with data older than 6 h. PAD ? means the station type is not known yet (market data does not carry it; it is looked up on EDSM), so check the pad size before relying on it. Station types listed: " + cfg.station_types.join(", ") + ".";
 
   var groups = {};
@@ -171,9 +172,11 @@ function render() {
   keys.forEach(function (j) { if (j > 2) html += tierHtml(j, groups[j], tab); });
   document.getElementById("tiers").innerHTML = html;
 
-  var secs = Math.round((Date.now() - new Date(data.updated).getTime()) / 1000);
-  document.getElementById("dot").className = "dot" + (secs > 300 ? " stale" : "");
-  var t = new Date(data.updated);
+  var st = data.status || {};
+  var checked = st.last_check_at || data.updated;
+  var secs = Math.max(0, Math.round((Date.now() - new Date(checked).getTime()) / 1000));
+  document.getElementById("dot").className = "dot" + (st.state === "error" || st.state === "stale" ? " stale" : "");
+  var t = new Date(checked);
   document.getElementById("stamp").textContent = "checked " + t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " (" + (secs < 90 ? secs + " s" : Math.round(secs / 60) + " min") + " ago)";
 }
 
@@ -210,24 +213,25 @@ function tierHtml(j, list, tab) {
 }
 
 function load() {
-  fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+  fetch("api/data?d=" + encodeURIComponent(NAME), { cache: "no-store" })
     .then(function (r) { if (!r.ok) throw new Error("no data"); return r.json(); })
-    .then(function (j) { data = j; render(); })
+    .then(function (j) { if (j.tabs) { data = j; render(); } else if (!data) document.getElementById("stamp").textContent = "loading"; })
     .catch(function () { if (!data) document.getElementById("stamp").textContent = "no data yet"; });
 }
-document.getElementById("tiers").addEventListener("click", function (e) {
-  var b = e.target.closest(".copy");
-  if (!b) return;
-  var sys = b.getAttribute("data-sys");
-  copyText(sys).then(function () {
-    copied = { sys: sys, until: Date.now() + 1200 };
-    b.classList.add("done"); b.title = "Copied";
-    setTimeout(function () { b.classList.remove("done"); b.title = "Copy system name"; }, 1200);
-  }).catch(function () { b.title = "Copy failed"; });
-});
-
+function listen() {
+  if (!window.EventSource) return;
+  var es = new EventSource("events?d=" + encodeURIComponent(NAME));
+  es.addEventListener("data", function (e) { data = JSON.parse(e.data); render(); });
+  es.addEventListener("status", function (e) {
+    if (!data) return;
+    data.status = JSON.parse(e.data);
+    render();
+  });
+  es.addEventListener("config", function () { load(); });
+}
 load();
-setInterval(load, 10000);
+listen();
+setInterval(load, 60000);
 setInterval(render, 5000);
 </script>
 </body>

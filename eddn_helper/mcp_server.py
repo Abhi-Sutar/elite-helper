@@ -30,7 +30,9 @@ mcp = MCPServer(
         "reputation, commander_stats, carrier_status, play_sessions) read the commander's history from the database, "
         "ingesting new journal lines on demand; every reply has journal_freshness - if db_behind_journal is true the "
         "answer may be missing the latest play (see journal_sync_status). "
-        "cg_board_target / cg_board_set_target read and move the search location of the local CG supply board."))
+        "The dashboard_* tools manage local live dashboards: kind \"recce\" (the default, systems with faction states) and "
+        "kind \"cg\" (a community-goal supply board: large-pad stations selling a commodity near a delivery system); "
+        "cg_board_target / cg_board_set_target read and move the search location of a cg dashboard."))
 
 
 _engine = None
@@ -477,8 +479,13 @@ def journal_sync_status() -> dict:
 @mcp.tool()
 def dashboard_create(config: dict) -> dict:
     """
-    Create or replace a Recce dashboard and return its name and URL (the local server is started if needed and
-    reused if already running). config keys, all optional except name: name (lowercase slug), title, refresh_seconds
+    Create or replace a dashboard and return its name and URL (the local server is started if needed and reused if
+    already running). config.kind picks the kind: "recce" (default, described below) or "cg", a community-goal supply
+    board with keys: name, title, refresh_seconds (min 5, default 30), target {name: delivery station, system: system
+    name or "current"}, ship {name, laden_ly, unladen_ly, cargo}, station_types (default the large pads), min_stock,
+    max_age_hours, lookup_ls (EDSM distance-to-star and pad-type lookups), stale_after_minutes and tabs [{key,
+    commodity, label, cg_price, max_jumps or max_ly, min_stock, station_types, max_age_hours}] (at least one tab).
+    The rest of this text describes the recce kind. config keys, all optional except name: name (lowercase slug), title, refresh_seconds
     (min 5, default 20), origin (a system name or "current" for the journal position), radius_ly, filters {economy
     (name, list, or null), min_population, controlling_only, player_faction_only, faction_state (e.g. "Expansion"),
     state_in (any|pending|active|recovering), kinds (with state_in "any": which of pending, active, recovering, other
@@ -530,24 +537,24 @@ def dashboard_delete(name: str) -> dict:
     return recce_tools.delete(name)
 
 
-# ---- CG supply board: where it searches from (see cg_board/README.md) -------------------------------------------------
+# ---- cg dashboards: where they search from -----------------------------------------------------------------------------
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-def cg_board_target() -> dict:
-    """The CG supply board's current search location (system and delivery station name), its refresh interval and its tabs."""
-    return cg_target.get_target()
+def cg_board_target(dashboard: str = "cg") -> dict:
+    """A cg dashboard's current search location (system and delivery station name), refresh interval and tabs."""
+    return cg_target.get_target(dashboard)
 
 
 @mcp.tool()
-def cg_board_set_target(system: str, station: str | None = None) -> dict:
+def cg_board_set_target(system: str, station: str | None = None, dashboard: str = "cg") -> dict:
     """
-    Move the CG supply board's search location. Stations are listed by distance from `system` (laden jumps). system:
-    an exact system name from the database, or "current" for the commander's journal position. station: optional name
-    of the delivery station, shown in the page subtitle only. Rewrites target in cg_board/config.json; a running
-    board applies it on its next refresh (about 30 s, no restart) and restarts its Change baselines when the system
-    changes. Unknown systems, or ones without coordinates, are rejected and nothing is changed.
+    Move a cg dashboard's search location (same as dashboard_update with a target patch, plus a check that the system
+    is in the database). Stations are listed by distance from `system` (laden jumps). system: an exact system name, or
+    "current" to follow the commander's journal position. station: optional name of the delivery station, shown in the
+    page subtitle only. Open pages update by themselves and the Change baselines restart when the system changes.
+    Unknown systems, or ones without coordinates, are rejected and nothing is changed.
     """
-    return _run(cg_target.set_target, system, station)
+    return _run(cg_target.set_target, system, station, dashboard)
 
 
 def main():

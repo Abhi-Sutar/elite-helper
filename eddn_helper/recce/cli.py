@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import webbrowser
+from pathlib import Path
 
 from . import config as rcfg
 from . import server
@@ -90,9 +91,29 @@ def cmd_show(args):
     cfg = rcfg.load(args.name)
     print(json.dumps(cfg, indent=2))
     if args.data:
+        from . import kinds
         from .core import Core
         core = Core(server.DbFactory())
-        print(json.dumps(core.snapshot(cfg), indent=2))
+        print(json.dumps(kinds.for_cfg(cfg).snapshot(core, cfg), indent=2))
+    return 0
+
+
+def cmd_reset(args):
+    from . import cg
+    _need(args.name)
+    if rcfg.kind_of(args.name) != "cg":
+        return _err(f"{args.name!r} is not a cg dashboard; only those keep a Change baseline")
+    cg.reset_baselines(args.name, args.tab)
+    print(f"Baseline reset: {args.tab or 'all tabs'} of {args.name!r}; the next refresh measures from now.")
+    return 0
+
+
+def cmd_import_cg(args):
+    from . import cg
+    saved = cg.import_legacy(args.dir, args.name, args.force)
+    print(f"Imported the old CG board into dashboard {saved['name']!r} ({len(saved['tabs'])} tabs, target "
+          f"{saved['target']['system']}). The old files were copied to {cg.state_dir() / 'legacy'}.")
+    print(f"Open it with: elite-dash open {saved['name']}")
     return 0
 
 
@@ -184,6 +205,17 @@ def build_parser():
     s.add_argument("name")
     s.add_argument("--data", action="store_true")
     s.set_defaults(func=cmd_show)
+
+    s = sub.add_parser("reset", help="restart the Change baseline of a cg dashboard (one tab, or all)")
+    s.add_argument("name", nargs="?", default="cg")
+    s.add_argument("tab", nargs="?")
+    s.set_defaults(func=cmd_reset)
+
+    s = sub.add_parser("import-cg", help="import the old standalone cg_board/ (config, baselines, EDSM cache)")
+    s.add_argument("--dir", default=str(Path(__file__).resolve().parents[2] / "cg_board"))
+    s.add_argument("--name", default="cg")
+    s.add_argument("--force", action="store_true", help="replace an existing dashboard")
+    s.set_defaults(func=cmd_import_cg)
 
     s = sub.add_parser("recentre", help="anchor a dashboard on the system you are in now")
     s.add_argument("name", nargs="?", default=rcfg.DEFAULT_NAME)

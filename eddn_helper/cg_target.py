@@ -1,84 +1,72 @@
-"""Where the CG supply board (cg_board/) searches from: read and change `target` in its config.json.
+"""Where a CG supply board (a recce dashboard of kind "cg") searches from: read and change its `target`.
 
-The board re-reads its config on every refresh, so a change made here shows up within refresh_seconds."""
-
-import json
-import os
-from pathlib import Path
+A running server applies the change on its next refresh and restarts the dashboard's Change baselines."""
 
 from . import queries
 from .journal import context as journal_context
+from .recce import config as rcfg
+
+DEFAULT_NAME = "cg"
 
 
-def config_path():
-    return Path(__file__).resolve().parent.parent / "cg_board" / "config.json"
-
-
-def _load(path):
+def _load(name):
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except OSError as e:
-        raise ValueError("cannot read %s: %s" % (path, e))
-    except ValueError as e:
-        raise ValueError("%s is not valid JSON: %s" % (path, e))
-    if not isinstance(cfg, dict):
-        raise ValueError("%s does not hold a JSON object" % path)
-    return cfg
+        cfg = rcfg.load(name)
+    except KeyError:
+        return None, {"error": f"no dashboard named {name!r} (existing: {', '.join(rcfg.list_names()) or 'none yet'})"}
+    except rcfg.ConfigError as e:
+        return None, {"error": "invalid dashboard config: " + "; ".join(e.errors)}
+    if cfg.get("kind") != "cg":
+        return None, {"error": f"{name!r} is not a cg dashboard"}
+    return cfg, None
 
 
-def _save(path, cfg):
-    tmp = Path(str(path) + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)  # the board may be reading the file right now: swap it in whole
+def get_target(name=DEFAULT_NAME):
+    cfg, err = _load(name)
+    if err:
+        return err
+    t = cfg["target"]
+    return {"dashboard": name, "system": t["system"], "station": t["name"], "refresh_seconds": cfg["refresh_seconds"],
+            "tabs": [tab["key"] for tab in cfg["tabs"]]}
 
 
-def get_target(path=None):
-    path = Path(path) if path else config_path()
-    try:
-        cfg = _load(path)
-    except ValueError as e:
-        return {"error": str(e)}
-    t = cfg.get("target") or {}
-    return {"system": t.get("system"), "station": t.get("name"), "refresh_seconds": cfg.get("refresh_seconds", 30),
-            "tabs": [tab.get("key") for tab in cfg.get("tabs", [])], "config_path": str(path)}
-
-
-def set_target(session, system, station=None, path=None, where=None):
+def set_target(session, system, station=None, name=DEFAULT_NAME, where=None):
     """
-    Point the board at `system` ("current" = the commander's journal position). The system must be in the database with
-    coordinates, since distances are measured from it. `station` is only the name the page shows for the delivery
-    point; without it the old name is kept when the system is unchanged, otherwise the system name is used.
-    Only target.system and target.name are touched. `where` replaces the journal lookup (tests).
+    Point the dashboard at `system` ("current" = follow the commander's journal position). The system must be in the
+    database with coordinates, since distances are measured from it. `station` is only the name the page shows for
+    the delivery point; without it the old name is kept when the system is unchanged, otherwise the system name is
+    used. Only target.system and target.name are touched. `where` replaces the journal lookup (tests).
     """
-    path = Path(path) if path else config_path()
-    try:
-        cfg = _load(path)
-    except ValueError as e:
-        return {"error": str(e)}
-    if str(system).strip().lower() == "current":
+    cfg, err = _load(name)
+    if err:
+        return err
+    old = dict(cfg["target"])
+    follow = str(system).strip().lower() == "current"
+    if follow:
+        row_name = "current"
+        if station is None and old["system"].lower() == "current":
+            station = old["name"]
         data = (where or journal_context.where_am_i)()
         if "error" in data or not data.get("system"):
             return {"error": "cannot use 'current': your position is unknown (%s)" % data.get("error", "no system")}
-        system = data["system"]
-    row = queries.find_system(session, str(system).strip())
+        check = data["system"]
+    else:
+        check = str(system).strip()
+    row = queries.find_system(session, check)
     if row is None:
-        return {"error": "system %r is not in the database, so the board could not measure distances from it" % system}
+        return {"error": "system %r is not in the database, so the board could not measure distances from it" % check}
     if row.x is None or row.y is None or row.z is None:
         return {"error": "%s has no coordinates in the database yet, so distances cannot be measured from it" % row.name}
-
-    old = dict(cfg.get("target") or {})
+    if not follow:
+        row_name = row.name
     if station:
-        name = station
-    elif old.get("system", "").lower() == row.name.lower() and old.get("name"):
-        name = old["name"]
+        label = station
+    elif old["system"].lower() == row_name.lower() and old["name"]:
+        label = old["name"]
     else:
-        name = row.name
-    cfg["target"] = {**old, "name": name, "system": row.name}
-    _save(path, cfg)
-    return {"system": row.name, "station": name, "previous": {"system": old.get("system"), "station": old.get("name")},
-            "changed": old.get("system", "").lower() != row.name.lower(),
-            "applied_within_seconds": cfg.get("refresh_seconds", 30), "config_path": str(path),
-            "note": "a running board picks this up on its next refresh; its Change baselines restart when the system changes"}
+        label = row.name
+    rcfg.update(name, {"target": {"name": label, "system": row_name}})
+    return {"dashboard": name, "system": row_name, "resolved_system": row.name, "station": label,
+            "previous": {"system": old["system"], "station": old["name"]},
+            "changed": old["system"].lower() != row_name.lower(), "applied_within_seconds": cfg["refresh_seconds"],
+            "note": "open pages update by themselves; the Change baselines restart when the target moves"}

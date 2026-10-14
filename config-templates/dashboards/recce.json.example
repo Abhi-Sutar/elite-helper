@@ -1,0 +1,44 @@
+{
+  "name": "recce",
+  "title": "Recce",
+  "refresh_seconds": 20,
+  "origin": "current",
+  "radius_ly": 100,
+  "filters": {
+    "economy": "Agriculture",
+    "min_population": 1000000,
+    "controlling_only": true,
+    "player_faction_only": true,
+    "faction_state": "Expansion",
+    "state_in": "any",
+    "kinds": [
+      "pending",
+      "active"
+    ]
+  },
+  "columns": [
+    "system",
+    "faction",
+    "economy",
+    "pending_for",
+    "state",
+    "expansion_chance",
+    "last_update"
+  ],
+  "expansion_estimate": true,
+  "sort": {
+    "by": "state",
+    "order": "asc"
+  },
+  "highlight_rules": [
+    {
+      "when": "active_for_under_hours",
+      "hours": 48
+    }
+  ],
+  "live_fetch": {
+    "enabled": true,
+    "max_requests": 10
+  },
+  "stale_after_minutes": 60
+}
