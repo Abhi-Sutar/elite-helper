@@ -22,8 +22,11 @@ them for you.
 
 **Claude desktop app caveat:** files that Claude's own tools write under `%LOCALAPPDATA%` land in the app's private
 copy (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Local\...`) and are not visible in your terminal. To share one
-folder between the app and your terminal, point `ELITE_HELPER_RECCE_DIR` at a folder outside AppData (for example
-`<repo>\local\recce`, which is git-ignored) for both.
+folder between the app and your terminal, point `ELITE_HELPER_RECCE_DIR` at a folder outside AppData for both: set it as
+a user environment variable for your terminal, and in the `env` block of the `elite-helper` server in
+`%APPDATA%\Claude\claude_desktop_config.json` for the app's MCP servers (then quit and reopen Claude). For example
+`C:\Users\<you>\elite-helper-data\recce`, or `<repo>\local\recce`, which is git-ignored. Without that, a dashboard changed
+through Claude is written to the private copy, and a second dashboard server can be started that your terminal cannot see.
 
 ## Environment variables
 
