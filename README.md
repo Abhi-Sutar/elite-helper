@@ -495,6 +495,36 @@ folder). Missing keys take the defaults below; errors name the field (`refresh_s
   factions that lack it, then waits 10 minutes if any remain unknown. Results are stored by the existing
   `refresh_missing` code. Without that variable nothing is fetched or written.
 
+## CG dashboard (community-goal supply board)
+
+The same server also shows dashboards of kind `cg`: for each commodity tab, the large-pad stations within a few laden
+jumps of the delivery system that sell it, with stock, loads, price, margin, distance from the star (Ls) and data age,
+ranked by a score (loads available, close to the star, fresh data). Open it like any dashboard: `elite-dash open cg`
+(or the `dashboard_open` tool). The page updates live, copies a system name with one click, and the server is shared
+with the Recce dashboards, so there is one port and one process.
+
+- **Config** (`dashboards\cg.json`, edited like any dashboard: `elite-dash edit cg --set target.system="HIP 69861"`, or
+  `dashboard_update`): `target {name, system}` (system name, or `"current"` to follow your journal position), `ship
+  {laden_ly, unladen_ly, cargo}`, `station_types` (default: the large pads), `min_stock`, `max_age_hours`, `lookup_ls`
+  and `tabs [{key, commodity, label, cg_price, max_jumps | max_ly, min_stock, station_types, max_age_hours}]`.
+  Changes apply within one refresh, no restart.
+- **Moving the target**: `dashboard_update` with a `target` patch, or `cg_board_set_target(system, station?)`, which also
+  checks that the system is in the database with coordinates. `cg_board_target()` reads it. Moving the target restarts
+  the Change baselines, since they only mean something around one target.
+- **Change baselines**: stock now minus stock when a station first appeared on the tab. `elite-dash reset cg [tab]`
+  restarts them. State lives in `recce\cg\` (baselines per dashboard, one shared EDSM cache).
+- **Station types**: market data carries no station type, so for stations the database has no type for, the server asks
+  EDSM (once per system, cached, 6 systems per refresh) and drops the ones that are not large pads. Until EDSM answers a
+  station is kept and flagged `PAD ?`. The same lookup gives Ls. `lookup_ls: false` turns EDSM off.
+- **From the old standalone script**: `elite-dash import-cg` imports the old `cg_board/` folder's config, baselines and
+  EDSM cache into a `cg` dashboard (the old files are copied to `recce\cg\legacy`).
+
+## Local config and templates
+
+Machine-specific files (dashboard configs, `settings.json` with database URLs, baselines, server registration, the
+pgpass file) are not in git; the patterns are in `.gitignore`. `config-templates/` has a template for each plus the table of
+environment variables and where every real file lives. A test keeps the templates valid and the variable table complete.
+
 ## Limitations
 
 - Only systems/stations that players visited while the listener ran are present (use `--live` to fill gaps).

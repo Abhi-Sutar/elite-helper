@@ -22,7 +22,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .. import database, migrate
 from . import config as rcfg
-from .core import Core, CoreError, column_labels, parse_ts
+from . import kinds
+from .core import Core, CoreError, parse_ts
 from .refresh import RefreshGate
 
 POLL_SECONDS = 5            # how often the cheap "did the database move?" check runs
@@ -113,7 +114,8 @@ class Runner:
 
     def config_payload(self):
         cfg = self.cfg
-        return {"name": self.name, "config": cfg, "labels": column_labels(cfg) if cfg else {},
+        return {"name": self.name, "kind": kinds.for_cfg(cfg).name if cfg else "recce", "config": cfg,
+                "labels": kinds.for_cfg(cfg).labels(cfg) if cfg else {},
                 "error": self.cfg_error, "dashboards": rcfg.list_names()}
 
     def status_payload(self):
@@ -131,6 +133,7 @@ class Runner:
         return {"state": state, "error": self.error, "refresh_seconds": refresh,
                 "last_check_at": iso(self.last_check_at), "last_refresh_at": iso(self.last_refresh_at),
                 "last_attempt_at": iso(self.last_attempt_at), "db_newest_faction_update": self.db_newest,
+                "db_newest": self.db_newest,
                 "current_system": self.current_system,
                 "server_time": iso(now)}
 
@@ -222,18 +225,19 @@ class Runner:
             return
         self._clear("check")
         self.last_check_at = now_utc()
-        self.db_newest = stamps["newest_faction_update"]
+        kind = kinds.for_cfg(self.cfg)
+        self.db_newest = stamps[kind.stamp_key]
         if mono - self._origin_checked >= ORIGIN_RECHECK_S:
             self._origin_checked = mono
             try:
                 self.current_system = self._call(self.core.current_system)
             except Exception:
                 pass                                        # keep the last known one; the snapshot reports problems
-        follow = self.cfg["origin"].strip().lower() == "current"
+        follow = kind.follows_position(self.cfg)
         self._origin_token = self.current_system if follow else None       # an anchored dashboard never moves
-        token = (stamps["newest_faction_update"], self._origin_token)
+        token = (stamps[kind.stamp_key], self._origin_token)
         if changed_cfg or self.gate.should_refresh(token, mono):
-            future = self.pool.submit(self.core.snapshot, self.cfg)
+            future = self.pool.submit(kind.snapshot, self.core, self.cfg)
             self.inflight = (future, token, mono, self.cfg_version)
             self.slow_reported = False
             self.last_attempt_at = now_utc()
@@ -264,7 +268,7 @@ class Runner:
         self.gate.done(token, mono)
         self._clear("snapshot", "check")
         self.last_refresh_at = now_utc()
-        self.db_newest = data["db"]["newest_faction_update"]
+        self.db_newest = data["db"][kinds.for_cfg(self.cfg).stamp_key]
         self._bump("data")
 
 
@@ -352,10 +356,15 @@ class Handler(BaseHTTPRequestHandler):
                 if default is None:
                     return self._send(404, {"error": "no dashboards yet; run: elite-dash new <name>"})
                 return self._send(302, b"", "text/plain", {"Location": f"/?d={quote(default)}"})
+            page = PAGE
             try:
-                return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+                page = kinds.get(rcfg.kind_of(name)).page
+            except (rcfg.ConfigError, KeyError):
+                pass                                    # unknown kind or missing dashboard: the page reports it
+            try:
+                return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
             except OSError:
-                return self._send(500, {"error": "page.html is missing"})
+                return self._send(500, {"error": f"{page.name} is missing"})
         if path in ("/api/config", "/api/data", "/events"):
             runner = self.server.manager.get(name) if name else None
             if runner is None:

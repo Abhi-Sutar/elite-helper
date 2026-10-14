@@ -137,9 +137,19 @@ def _deep_merge(base, over):
 
 
 def validate(raw):
-    """Fill defaults and check a config. Returns the complete config; raises ConfigError listing every problem."""
+    """Fill defaults and check a config of any kind (see kinds.py). Returns the complete config; raises ConfigError
+    listing every problem."""
+    from . import kinds
     if not isinstance(raw, dict):
         raise ConfigError("config: must be a JSON object")
+    return kinds.get(raw.get("kind")).validate(raw)
+
+
+def validate_recce(raw):
+    """The Recce kind's validation. An explicit "kind": "recce" is accepted and dropped (it is the default)."""
+    if not isinstance(raw, dict):
+        raise ConfigError("config: must be a JSON object")
+    raw = {k: v for k, v in raw.items() if k != "kind"}
     errors = []
     for k in raw:
         if k not in TOP_KEYS:
@@ -293,6 +303,15 @@ def load(name):
     return cfg
 
 
+def kind_of(name):
+    """The kind named in a stored dashboard file, read without validating it (default "recce"; unreadable -> default)."""
+    try:
+        raw = json.loads(path_for(_check_name(name)).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "recce"
+    return raw.get("kind", "recce") if isinstance(raw, dict) else "recce"
+
+
 def stamp(name):
     """(mtime_ns, size) of a dashboard file, or None when it does not exist; cheap change detection."""
     try:
@@ -326,6 +345,8 @@ def update(name, patch):
     cfg = load(name)
     if isinstance(patch, dict) and patch.get("name", name) != name:
         raise ConfigError("name: cannot be changed with an update; create a new dashboard instead")
+    if isinstance(patch, dict) and patch.get("kind", cfg.get("kind", "recce")) != cfg.get("kind", "recce"):
+        raise ConfigError("kind: cannot be changed with an update; create a new dashboard instead")
     return save(apply_patch(cfg, patch))
 
 
@@ -346,7 +367,7 @@ def current_system(where=None):
 def pin_origin(cfg, where=None):
     """A new dashboard whose origin is "current" is anchored to the system the commander is in right now.
     Returns (config, note); the note says why it stayed "current" when the journal could not be read."""
-    if not isinstance(cfg, dict) or str(cfg.get("origin", DEFAULT_CONFIG["origin"])).strip().lower() != "current":
+    if not isinstance(cfg, dict) or cfg.get("kind", "recce") != "recce"             or str(cfg.get("origin", DEFAULT_CONFIG["origin"])).strip().lower() != "current":
         return cfg, None
     system, reason = current_system(where)
     if system is None:

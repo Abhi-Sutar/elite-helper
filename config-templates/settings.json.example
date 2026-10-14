@@ -1,0 +1,4 @@
+{
+  "database_url": "postgresql+psycopg://elite_reader@localhost:5432/elite?passfile=C%3A%2FUsers%2FYOU%2FAppData%2FLocal%2Felite-helper%2Fpgpass.conf",
+  "ingest_database_url": "postgresql+psycopg://elite_writer@localhost:5432/elite?passfile=C%3A%2FUsers%2FYOU%2FAppData%2FLocal%2Felite-helper%2Fpgpass.conf"
+}

@@ -234,7 +234,20 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# CG board runtime state
-cg_board/data.json
-cg_board/baseline.json
-cg_board/ls_cache.json
+# ---- Local config and state: machine-specific or rewritten while the programs run (templates: config-templates/) ----
+# The real files normally live in %LOCALAPPDATA%\elite-helper; these patterns cover pointing ELITE_HELPER_RECCE_DIR
+# (or a copy of the data dir) inside the repo.
+/local/
+pgpass.conf
+**/dashboards/*.json
+**/recce/settings.json
+**/recce/server.json
+**/recce/server.log
+**/recce/cg/
+*.baseline.json
+edsm-cache.json
+*.local.json
+
+# Claude Code: personal project notes and local settings
+CLAUDE.md
+.claude/settings.local.json
