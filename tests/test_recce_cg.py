@@ -258,6 +258,16 @@ class ServerTests(ServerCase):
         self.assertIn(b"EventSource", body)
         self.assertNotIn(b"CG Supply Board", body)
 
+    def test_page_wires_the_copy_button(self):
+        """The copy buttons are rebuilt on every update, so the page needs one delegated click handler for them
+        (it was lost once in the port from the standalone board: the button showed and did nothing)."""
+        _, _, body = self.get("/?d=cg")
+        page = body.decode("utf-8")
+        self.assertIn('data-sys="', page)                                   # buttons are rendered with the system name
+        self.assertIn('getElementById("tiers").addEventListener("click"', page)
+        self.assertIn('closest(".copy")', page)
+        self.assertIn("copyText(sys)", page)
+
     def test_refreshes_when_market_data_moves_and_on_config_edit(self):
         self.json("/api/config?d=cg")
         self.assertTrue(wait_for(lambda: self.json("/api/data?d=cg")[1].get("tabs") is not None))
