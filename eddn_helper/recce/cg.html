@@ -229,6 +229,18 @@ function listen() {
   });
   es.addEventListener("config", function () { load(); });
 }
+// One delegated listener: the tables are rebuilt on every update, so per-button listeners would be lost.
+document.getElementById("tiers").addEventListener("click", function (e) {
+  var b = e.target.closest(".copy");
+  if (!b) return;
+  var sys = b.getAttribute("data-sys");
+  copyText(sys).then(function () {
+    copied = { sys: sys, until: Date.now() + 1200 };
+    b.classList.add("done"); b.title = "Copied";
+    setTimeout(function () { b.classList.remove("done"); b.title = "Copy system name"; }, 1200);
+  }).catch(function () { b.title = "Copy failed"; });
+});
+
 load();
 listen();
 setInterval(load, 60000);
