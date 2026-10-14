@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -47,16 +48,15 @@ class TimescaleTests(unittest.TestCase):
         procs = {r[0] for r in self.s.execute(text(
             "SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'price_history'"))}
         self.assertTrue({"policy_compression", "policy_retention"} <= procs, procs)
-        self.assertEqual(migrate.status(self.s.get_bind())["current"], "0004")
+        self.assertEqual(migrate.status(self.s.get_bind())["current"], migrate.SCHEMA_HEAD)
 
-    def test_faction_history_is_a_compressed_hypertable_with_a_one_year_retention_policy(self):
+    def test_faction_history_is_a_compressed_hypertable_without_a_retention_policy(self):
         self.assertTrue(store.history_is_hypertable(self.s, "faction_history"))
         self.assertTrue(self.scalar("SELECT compression_enabled FROM timescaledb_information.hypertables "
                                     "WHERE hypertable_name = 'faction_history'"))
         jobs = {r[0]: r[1] for r in self.s.execute(text(
             "SELECT proc_name, config::text FROM timescaledb_information.jobs WHERE hypertable_name = 'faction_history'"))}
-        self.assertIn("policy_retention", jobs)
-        self.assertIn("1 year", jobs["policy_retention"])
+        self.assertNotIn("policy_retention", jobs)
         self.assertIn("policy_compression", jobs)
 
     def test_faction_observations_states_and_left_markers_on_postgres(self):
@@ -71,12 +71,12 @@ class TimescaleTests(unittest.TestCase):
         t = queries.faction_timeline(self.s, "Sol", "B")
         self.assertEqual(len(t["left_events"]), 1)
 
-    def test_event_logs_are_compressed_hypertables_with_a_one_year_retention_policy(self):
+    def test_event_logs_are_compressed_hypertables_pruned_by_store_prune(self):
         for table in ("market_update", "system_update"):
             self.assertTrue(store.history_is_hypertable(self.s, table), table)
             jobs = {r[0]: r[1] for r in self.s.execute(text(
                 f"SELECT proc_name, config::text FROM timescaledb_information.jobs WHERE hypertable_name = '{table}'"))}
-            self.assertIn("1 year", jobs.get("policy_retention", ""), table)
+            self.assertNotIn("policy_retention", jobs, table)
             self.assertIn("policy_compression", jobs, table)
 
     def test_changes_mode_event_log_and_change_rows_on_postgres(self):
@@ -149,6 +149,31 @@ class TimescaleTests(unittest.TestCase):
         self.s.delete(self.s.get(Market, 7))  # cascade through compressed data
         self.s.commit()
         self.assertEqual(self.s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 0)
+
+    def test_prune_keeps_the_newest_update_row_per_key_in_compressed_event_logs(self):
+        from test_timeline import at, fac, sys_msg
+        from eddn_helper.models import MarketUpdate, SystemUpdate
+        for days_ago in (800, 790, 3):  # Hub: two rows over a year old, one recent
+            self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * days_ago)))
+        for days_ago in (800, 790):  # Old Hub: nothing recent, its newest row must still survive
+            self.feed(commodity_msg(8, "Old Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * days_ago)))
+        for days_ago in (800, 790, 3):
+            self.feed(sys_msg([fac("A", 0.5)], at(24 * days_ago)))
+        compressed = 0
+        for table in ("market_update", "system_update"):
+            compressed += self.scalar(f"SELECT count(*) FROM (SELECT compress_chunk(c, if_not_compressed => true) "
+                                      f"FROM show_chunks('{table}', older_than => INTERVAL '1 day') c) x")
+        self.s.commit()
+        self.assertGreaterEqual(compressed, 2)
+
+        out = store.prune(self.s)
+        self.assertEqual((out["market_update"], out["system_update"]), (3, 2))
+        rows = self.s.execute(select(MarketUpdate.market_id, func.count()).group_by(MarketUpdate.market_id)
+                              .order_by(MarketUpdate.market_id)).all()
+        self.assertEqual(rows, [(7, 1), (8, 1)])
+        newest_old_hub = self.s.execute(select(func.max(MarketUpdate.ts)).where(MarketUpdate.market_id == 8)).scalar_one()
+        self.assertLess(newest_old_hub, datetime.now(timezone.utc) - timedelta(days=700))
+        self.assertEqual(self.s.execute(select(func.count()).select_from(SystemUpdate)).scalar_one(), 1)
 
     def test_prune_leaves_history_to_the_retention_policy(self):
         self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(2)))

@@ -236,7 +236,7 @@ def price_history(station: str, commodity: str, system: str | None = None, days:
     Price and amount time series at a station (fleet carriers by callsign). commodity is one name, a comma
     list, or 'all' (busiest first, capped at max_commodities unless all_commodities=True). Each point has
     buy_price (station sells; needs stock), sell_price (station buys; needs demand; 0 = side inactive),
-    mean_price (galactic average), stock (supply), demand and their brackets. Kept 30 days.
+    mean_price (galactic average), stock (supply), demand and their brackets. History kept 30 days (a station's last report is kept for ever).
     Stored rows are change points (the value at any time is the latest row at or before it; state_at_start gives the
     state when the window opens); `updates` is the true number of EDDN updates and `rows` the stored change rows.
     Series longer than max_points are summarised into time buckets with min/avg/max of prices, stock and demand

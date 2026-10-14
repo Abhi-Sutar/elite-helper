@@ -71,9 +71,10 @@ class FullHistoryTests(unittest.TestCase):
         self.assertEqual(store.prune(self.s, 30)["price_history"], 1)
         self.assertEqual(self.count_history(), 1)
 
-    def test_market_message_older_than_retention_is_not_stored(self):
+    def test_old_report_of_a_known_market_is_not_stored(self):
+        self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(1)))
         self.assertFalse(self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * 40))))
-        self.assertEqual(self.count_history(), 0)
+        self.assertEqual(self.count_history(), 1)
 
     def test_a_partial_message_does_not_remove_other_commodities_from_the_snapshot(self):
         self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0), ("tea", 2, 2, 0, 0)], when=ts(3)))
@@ -128,7 +129,9 @@ class ModeSelectionTests(unittest.TestCase):
                     commodity_msg(7, "Hub", "Sol", [("gold", 1000, 100, 0, 0)], when=ts(h))))
             s.commit()
             self.assertEqual(s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 1)
-            s.get_bind().dispose()
+            engine = s.get_bind()
+            s.close()  # dispose() leaves a checked-out connection open, and its transaction blocks the next PostgreSQL test
+            engine.dispose()
 
 
 class CopyDataTests(unittest.TestCase):
