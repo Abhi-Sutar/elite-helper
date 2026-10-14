@@ -93,7 +93,8 @@ def system_info(system: str, live_lookup: bool = False) -> dict:
 def system_economy(system: str, live_lookup: bool = False) -> dict:
     """
     A system's economy and second economy (e.g. Extraction, Refinery, Industrial, HighTech, Agri) plus its stations
-    with type and station economies. Current snapshot only; live_lookup refreshes a missing/stale system from EDSM and
+    with type and station economies (economy_shares gives each EDDN station's proportions, e.g. Industrial 0.8 / Agri 0.2;
+    empty for EDSM-only stations and for markets not re-reported since proportions were first stored). Current snapshot only; live_lookup refreshes a missing/stale system from EDSM and
     lists EDSM-only stations under stations_live.
     """
     return _run_fetching(live_lookup, live.system_economy, system, live_lookup)

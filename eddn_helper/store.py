@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, null, select, text, update
 
 from .database import insert_for
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, FactionInfo, Market, MarketUpdate, Meta,
@@ -315,13 +315,14 @@ def upsert_market(session, m, prices, source="eddn", uploader="", software=""):
     stmt = insert_for(session)(Market.__table__).values(
         market_id=mid, station=m["station"], system_name=m["system_name"], system_id64=system_id,
         station_type=m.get("station_type"), is_carrier=bool(m.get("is_carrier")),
-        economies=m.get("economies") or [], prohibited=m.get("prohibited") or [],
-        updated_at=ts, source=source)
+        economies=m.get("economies") or [], economy_shares=m.get("economy_shares") or null(),
+        prohibited=m.get("prohibited") or [], updated_at=ts, source=source)
     ex = stmt.excluded
     session.execute(stmt.on_conflict_do_update(index_elements=["market_id"], set_={
         "station": ex.station, "system_name": ex.system_name, "system_id64": ex.system_id64,
         "station_type": func.coalesce(ex.station_type, Market.station_type), "is_carrier": ex.is_carrier,
-        "economies": ex.economies, "prohibited": ex.prohibited, "updated_at": ex.updated_at,
+        "economies": ex.economies, "economy_shares": func.coalesce(ex.economy_shares, Market.economy_shares),
+        "prohibited": ex.prohibited, "updated_at": ex.updated_at,
         "source": ex.source}))
 
     ids = commodity_ids(session, [p["commodity"] for p in prices])
