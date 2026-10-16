@@ -40,8 +40,15 @@ def _pct(v):
     return round(v * 100, 1) if v is not None else None
 
 
+def _market_in_system():
+    """Join condition market -> system: by id64 when linked, by name only for unlinked markets (names repeat)."""
+    return (System.id64 == Market.system_id64) | (
+        Market.system_id64.is_(None) & (func.lower(System.name) == func.lower(Market.system_name)))
+
+
 def find_system(session, name):
-    return session.execute(select(System).where(func.lower(System.name) == name.lower())).scalars().first()
+    return session.execute(select(System).where(func.lower(System.name) == name.lower())
+                           .order_by(System.updated_at.desc(), System.id64)).scalars().first()
 
 
 def _state_items(items):
@@ -675,7 +682,7 @@ def _candidate_rows(session, commodity_symbol, origin, ly, max_age_hours, includ
                 System.x, System.y, System.z)
          .join(Market, Market.market_id == CommodityPrice.market_id)
          .join(Commodity, Commodity.id == CommodityPrice.commodity_id)
-         .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name))
+         .outerjoin(System, _market_in_system())
          .where(func.coalesce(CommodityPrice.seen_at, Market.updated_at) >= _fresh_cutoff(max_age_hours)))
     if commodity_symbol:
         q = q.where(Commodity.symbol == commodity_symbol)
@@ -828,7 +835,7 @@ def _as_list(value):
 def _system_markets(session, system_ids=None, include_carriers=False):
     """{system_id64: [Market]}; a market belongs to its system_id64 or, when unlinked, to the system of that name."""
     q = (select(Market, func.coalesce(Market.system_id64, System.id64).label("sid"))
-         .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name)))
+         .outerjoin(System, _market_in_system()))
     if not include_carriers:
         q = q.where(Market.is_carrier.is_(False))
     out = {}
@@ -1224,7 +1231,7 @@ def find_systems(session, economies=None, economy_scope="system", include_second
               .select_from(CommodityPrice)
               .join(Market, Market.market_id == CommodityPrice.market_id)
               .join(Commodity, Commodity.id == CommodityPrice.commodity_id)
-              .outerjoin(System, func.lower(System.name) == func.lower(Market.system_name))
+              .outerjoin(System, _market_in_system())
               .where(Commodity.symbol.in_(commodities), CommodityPrice.demand > 0,
                      func.coalesce(CommodityPrice.seen_at, Market.updated_at) >= fresh))
         if not include_carrier_markets:

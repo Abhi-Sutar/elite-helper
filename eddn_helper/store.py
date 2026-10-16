@@ -289,6 +289,19 @@ def _record_faction_history(session, id64, ts, f):
 
 # ---- markets / prices ------------------------------------------------------------------------
 
+def resolve_system_id(session, name, current=None):
+    """
+    id64 of the system called `name`, or None. Market messages carry no SystemAddress and system names are not
+    unique, so with several matches keep `current` (the market's stored system) if it is one of them, else take the
+    most recently updated system.
+    """
+    rows = session.execute(select(System.id64).where(func.lower(System.name) == name.lower())
+                           .order_by(System.updated_at.desc(), System.id64)).scalars().all()
+    if not rows:
+        return None
+    return current if current in rows else rows[0]
+
+
 def upsert_market(session, m, prices, source="eddn", uploader="", software=""):
     """
     Apply one market message. Every accepted message is recorded in market_update (traffic). The current snapshot
@@ -299,7 +312,8 @@ def upsert_market(session, m, prices, source="eddn", uploader="", software=""):
     ts = to_dt(m["timestamp"])
     mid = m["market_id"]
     mode = history_mode(session)
-    existing = session.execute(select(Market.updated_at).where(Market.market_id == mid)).scalar_one_or_none()
+    row = session.execute(select(Market.updated_at, Market.system_id64).where(Market.market_id == mid)).first()
+    existing, current_system = (row.updated_at, row.system_id64) if row else (None, None)
     if ts < datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS) and existing is not None and ts < existing:
         return False  # old and not the market's latest report: nothing to keep (some clients re-upload old data)
     if existing is not None and ts < existing:
@@ -310,8 +324,7 @@ def upsert_market(session, m, prices, source="eddn", uploader="", software=""):
             n = len(prices)
         _log_market_event(session, mid, ts, uploader, software, len(prices), n)
         return True
-    system_id = session.execute(select(System.id64).where(func.lower(System.name) == m["system_name"].lower())
-                                ).scalar_one_or_none()
+    system_id = resolve_system_id(session, m["system_name"], current_system)
     stmt = insert_for(session)(Market.__table__).values(
         market_id=mid, station=m["station"], system_name=m["system_name"], system_id64=system_id,
         station_type=m.get("station_type"), is_carrier=bool(m.get("is_carrier")),
@@ -463,8 +476,11 @@ def prune(session, days=RETENTION_DAYS):
 
 def link_markets_to_systems(session):
     """Resolve markets.system_id64 for markets whose system became known after the market message."""
-    sub = select(System.id64).where(func.lower(System.name) == func.lower(Market.system_name)).scalar_subquery()
-    n = session.execute(update(Market.__table__).where(Market.system_id64.is_(None)).values(system_id64=sub)).rowcount
+    # Names are not unique (EDSM lists many duplicates): only link when exactly one system has the name.
+    sub = (select(func.min(System.id64)).where(func.lower(System.name) == func.lower(Market.system_name))
+           .having(func.count() == 1).scalar_subquery())
+    n = session.execute(update(Market.__table__).where(Market.system_id64.is_(None), sub.is_not(None))
+                       .values(system_id64=sub)).rowcount
     session.commit()
     return n
 
