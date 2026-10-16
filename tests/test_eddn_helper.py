@@ -118,6 +118,39 @@ class StoreQueryTests(unittest.TestCase):
         self.s.expire_all()
         self.assertEqual(self.s.get(Market, 5).system_id64, 1)
 
+    def test_duplicate_system_name(self):
+        """Two real systems can share a name; market reports must not fail and must stay on their system."""
+        self.feed(jump_msg("Twin", 1, [0, 0, 0], when=ts(5)))
+        self.feed(jump_msg("Twin", 2, [50, 0, 0], when=ts(1)))
+        self.assertTrue(self.feed(commodity_msg(20, "Hub", "Twin", [("gold", 9000, 50, 0, 0)], when=ts(3))))
+        self.assertEqual(self.s.get(Market, 20).system_id64, 2)        # most recently updated system
+        self.s.execute(update(Market).where(Market.market_id == 20).values(system_id64=1))
+        self.s.commit()
+        self.assertTrue(self.feed(commodity_msg(20, "Hub", "Twin", [("gold", 9100, 50, 0, 0)], when=ts(2))))
+        self.s.expire_all()
+        self.assertEqual(self.s.get(Market, 20).system_id64, 1)        # a linked market keeps its system
+        self.assertEqual(store.resolve_system_id(self.s, "twin"), 2)
+        self.assertEqual(queries.find_system(self.s, "TWIN").id64, 2)
+
+    def test_link_markets_skips_ambiguous_names(self):
+        self.feed(commodity_msg(21, "Hub", "Twin", [("gold", 9000, 50, 0, 0)]))
+        self.feed(commodity_msg(22, "Port", "Solo", [("gold", 9000, 50, 0, 0)]))
+        self.feed(jump_msg("Twin", 1, [0, 0, 0]))
+        self.feed(jump_msg("Twin", 2, [50, 0, 0]))
+        self.feed(jump_msg("Solo", 3, [9, 0, 0]))
+        self.assertEqual(store.link_markets_to_systems(self.s), 1)
+        self.s.expire_all()
+        self.assertIsNone(self.s.get(Market, 21).system_id64)
+        self.assertEqual(self.s.get(Market, 22).system_id64, 3)
+
+    def test_find_commodity_lists_a_linked_market_once_despite_duplicate_name(self):
+        self.feed(jump_msg("Sol", 1, [0, 0, 0]))
+        self.feed(jump_msg("Twin", 2, [10, 0, 0]))
+        self.feed(jump_msg("Twin", 3, [60, 0, 0]))
+        self.feed(commodity_msg(23, "Hub", "Twin", [("gold", 8000, 500, 0, 0)]))
+        rows = queries.find_commodity(self.s, "gold", "buy", "Sol", 100)
+        self.assertEqual([r["station"] for r in rows["results"]].count("Hub"), 1)
+
     def test_find_commodity_and_trades(self):
         self.feed(jump_msg("Sol", 1, [0, 0, 0]))
         self.feed(jump_msg("Near", 2, [10, 0, 0]))
