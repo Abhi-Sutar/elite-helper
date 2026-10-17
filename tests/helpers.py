@@ -10,6 +10,14 @@ from eddn_helper.models import Base
 PG_URL = os.environ.get("TEST_DATABASE_URL")
 
 
+def _pause_timescale_jobs(engine):
+    """Every fresh schema gets policy jobs that start within seconds and deadlock with the test's own inserts."""
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")).first():
+            conn.execute(text("SELECT alter_job(job_id, scheduled => false) FROM timescaledb_information.jobs "
+                              "WHERE hypertable_name IS NOT NULL"))
+
+
 def new_session():
     """A session on a freshly migrated database: in-memory SQLite, or the PostgreSQL test database (wiped first)."""
     if PG_URL:
@@ -20,4 +28,6 @@ def new_session():
     else:
         engine = database.make_engine("sqlite://")
     migrate.upgrade(engine, backup=False)
+    if PG_URL:
+        _pause_timescale_jobs(engine)
     return database.make_session_factory(engine)()
