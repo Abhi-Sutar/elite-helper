@@ -150,9 +150,8 @@ class TimescaleTests(unittest.TestCase):
         self.s.commit()
         self.assertEqual(self.s.execute(select(func.count()).select_from(PriceHistory)).scalar_one(), 0)
 
-    def test_prune_keeps_the_newest_update_row_per_key_in_compressed_event_logs(self):
+    def seed_compressed_old_events(self):
         from test_timeline import at, fac, sys_msg
-        from eddn_helper.models import MarketUpdate, SystemUpdate
         for days_ago in (800, 790, 3):  # Hub: two rows over a year old, one recent
             self.feed(commodity_msg(7, "Hub", "Sol", [("gold", 1, 1, 0, 0)], when=ts(24 * days_ago)))
         for days_ago in (800, 790):  # Old Hub: nothing recent, its newest row must still survive
@@ -166,8 +165,20 @@ class TimescaleTests(unittest.TestCase):
         self.s.commit()
         self.assertGreaterEqual(compressed, 2)
 
+    def test_prune_keeps_the_newest_update_row_per_key_in_compressed_event_logs(self):
+        self.seed_compressed_old_events()
         out = store.prune(self.s)
         self.assertEqual((out["market_update"], out["system_update"]), (3, 2))
+        self.check_event_survivors()
+
+    def test_batched_prune_of_compressed_event_logs_gives_the_same_result(self):
+        self.seed_compressed_old_events()
+        out, finished = store.prune_events(self.s, batch=1)
+        self.assertEqual((out, finished), ({"market_update": 3, "system_update": 2}, True))
+        self.check_event_survivors()
+
+    def check_event_survivors(self):
+        from eddn_helper.models import MarketUpdate, SystemUpdate
         rows = self.s.execute(select(MarketUpdate.market_id, func.count()).group_by(MarketUpdate.market_id)
                               .order_by(MarketUpdate.market_id)).all()
         self.assertEqual(rows, [(7, 1), (8, 1)])

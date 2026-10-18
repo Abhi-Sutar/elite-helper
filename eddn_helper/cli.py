@@ -1014,7 +1014,7 @@ def build_parser():
     sp.set_defaults(raw=True)
     sp.add_argument("--from", dest="source", required=True, help="source database URL or SQLite path")
     sp.add_argument("--to", dest="dest", required=True, help="destination database URL (must be migrated to head)")
-    sp = add("prune", cmd_prune, "Delete price history older than N days, keeping each market's last report (the listener also does this hourly)")
+    sp = add("prune", cmd_prune, "Delete price history older than N days, keeping each market's last report (the listener also does this)")
     sp.add_argument("--days", type=int, default=store.RETENTION_DAYS)
     sp = add("economy", cmd_economy, "A system's economy and second economy plus its stations and station economies",
              live_opt=True)

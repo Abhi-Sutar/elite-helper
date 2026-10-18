@@ -1,8 +1,9 @@
 """Write side: apply parsed EDDN/EDSM data to the database (dialect-neutral SQLAlchemy Core)."""
 
+import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, null, select, text, update
+from sqlalchemy import delete, func, null, select, text, tuple_, update
 
 from .database import insert_for
 from .models import (Commodity, CommodityPrice, Faction, FactionHistory, FactionInfo, Market, MarketUpdate, Meta,
@@ -10,7 +11,8 @@ from .models import (Commodity, CommodityPrice, Faction, FactionHistory, Faction
 
 RETENTION_DAYS = 30             # commodity price history and per-commodity snapshot rows (a market's last report is kept)
 EVENT_RETENTION_DAYS = 365      # market_update / system_update (one small row per EDDN message)
-HISTORY_MIN_INTERVAL_S = 3600   # thresholded mode: at most one history row per commodity per station per hour
+BATCH_ROWS = 5000               # rows per delete statement while pruning (one commit each)
+HISTORY_MIN_INTERVAL_S = 3600  # thresholded mode: at most one history row per commodity per station per hour
 PRICE_CHANGE_PCT = 0.05         # thresholded mode: record when buy/sell price moves by >= 5%
 AMOUNT_CHANGE_PCT = 0.25        # thresholded mode: record when stock/demand moves by >= 25%
 INFLUENCE_EPSILON = 0.0005      # influence moves smaller than this (0.05 percentage points) are not changes
@@ -446,6 +448,63 @@ def history_is_hypertable(session, table="price_history"):
     ), {"t": table}).first() is not None
 
 
+def _delete_in_batches(session, table, where, batch, deadline):
+    """
+    Delete the rows matching `where` at most `batch` at a time, committing after each batch, until none are left or
+    time.monotonic() passes `deadline`. Rows go by primary key (a ctid is not unique across hypertable chunks), so
+    a delete on a compressed chunk only touches the batches it needs. Returns (deleted, finished); an unfinished
+    run is resumed by the next call because every predicate is idempotent.
+    """
+    pk = list(table.primary_key.columns)
+    match = pk[0] if len(pk) == 1 else tuple_(*pk)
+    total = 0
+    while True:
+        keys = [tuple(r) if len(pk) > 1 else r[0]
+                for r in session.execute(select(*pk).where(where).limit(batch)).all()]
+        if not keys:
+            return total, True
+        total += session.execute(delete(table).where(match.in_(keys))).rowcount
+        session.commit()
+        if len(keys) < batch:
+            return total, True
+        if deadline is not None and time.monotonic() >= deadline:
+            return total, False
+
+
+def prune_price_history(session, days=RETENTION_DAYS, batch=BATCH_ROWS, deadline=None):
+    """Delete price history older than `days`. On a TimescaleDB hypertable the retention policy does it instead."""
+    if history_is_hypertable(session, "price_history"):
+        return {"price_history": 0}, True
+    t = PriceHistory.__table__
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    n, done = _delete_in_batches(session, t, t.c.ts < cutoff, batch, deadline)
+    return {"price_history": n}, done
+
+
+def prune_events(session, batch=BATCH_ROWS, deadline=None):
+    """Expire market_update / system_update rows past a year, sparing the newest row of each market / system."""
+    event_cutoff = datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
+    out, finished = {}, True
+    for model, key in ((MarketUpdate, "market_id"), (SystemUpdate, "system_id64")):
+        t = model.__table__
+        other = t.alias()
+        newest = select(func.max(other.c.ts)).where(other.c[key] == t.c[key]).scalar_subquery()
+        out[t.name], done = _delete_in_batches(session, t, (t.c.ts < event_cutoff) & (t.c.ts < newest), batch, deadline)
+        finished = finished and done
+        if not done:
+            break
+    return out, finished
+
+
+def prune_commodity_prices(session, days=RETENTION_DAYS, batch=BATCH_ROWS, deadline=None):
+    """Delete per-commodity snapshot rows older than `days` that a newer report of the same market superseded."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    t = CommodityPrice.__table__
+    latest = select(Market.updated_at).where(Market.market_id == t.c.market_id).scalar_subquery()
+    n, done = _delete_in_batches(session, t, (t.c.seen_at < cutoff) & (t.c.seen_at < latest), batch, deadline)
+    return {"commodity_prices": n}, done
+
+
 def prune(session, days=RETENTION_DAYS):
     """
     Delete commodity data older than `days`: price history rows and per-commodity snapshot rows. Markets are kept
@@ -453,24 +512,11 @@ def prune(session, days=RETENTION_DAYS):
     Systems, factions, faction history and the name tables are never pruned; the update logs expire after a year
     except the newest row of each market / system.
     On a TimescaleDB hypertable the retention policy drops expired price history chunks, so that is left to it.
+    Runs to completion; the listener calls the three steps separately, bounded, from its maintenance thread.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     out = {}
-    if history_is_hypertable(session, "price_history"):
-        out["price_history"] = 0
-    else:
-        out["price_history"] = session.execute(delete(PriceHistory.__table__).where(
-            PriceHistory.ts < cutoff)).rowcount
-    event_cutoff = datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
-    for model, key in ((MarketUpdate, "market_id"), (SystemUpdate, "system_id64")):
-        t = model.__table__
-        other = t.alias()
-        newest = select(func.max(other.c.ts)).where(other.c[key] == t.c[key]).scalar_subquery()
-        out[t.name] = session.execute(delete(t).where((t.c.ts < event_cutoff) & (t.c.ts < newest))).rowcount
-    latest = select(Market.updated_at).where(Market.market_id == CommodityPrice.market_id).scalar_subquery()
-    out["commodity_prices"] = session.execute(delete(CommodityPrice.__table__).where(
-        (CommodityPrice.seen_at < cutoff) & (CommodityPrice.seen_at < latest))).rowcount
-    session.commit()
+    for part, _ in (prune_price_history(session, days), prune_events(session), prune_commodity_prices(session, days)):
+        out.update(part)
     return out
 
 
