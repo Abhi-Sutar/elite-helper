@@ -14,6 +14,7 @@ Everything here is a **template**. The real, machine-specific files are not in g
 | `dashboards/recce.json.example` | `recce\dashboards\recce.json` | you, `elite-dash new/edit`, `dashboard_create/update`, the page's radius and player-only toggles |
 | `dashboards/cg.json.example` | `recce\dashboards\cg.json` | you, `elite-dash edit cg`, `dashboard_update`, `cg_board_set_target` |
 | `pgpass.conf.example` | `pgpass.conf` | `scripts\create-pgpass.ps1` |
+| - | `coriolis-data\catalogue.json` | `build-data` / the `build_*` tools (downloaded EDCD ship and module data; delete it to force a fresh download) |
 | - | `recce\server.json`, `recce\server.log`, `recce\cg\*.baseline.json`, `recce\cg\edsm-cache.json` | the dashboard server (never edit by hand) |
 
 Copy a template, drop the `.example` suffix, adjust it. Dashboards are validated when loaded: a wrong key is reported
