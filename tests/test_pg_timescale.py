@@ -26,6 +26,14 @@ class TimescaleTests(unittest.TestCase):
         self.s.close()
         engine.dispose()
 
+    def test_storage_tuning_applied_by_migration_0011(self):
+        opts = {r[0]: set(r[1] or []) for r in self.s.execute(text(
+            "SELECT relname, reloptions FROM pg_class WHERE relname IN ('commodity_prices', 'systems')"))}
+        self.assertIn("fillfactor=80", opts["commodity_prices"])
+        self.assertIn("autovacuum_vacuum_scale_factor=0.02", opts["commodity_prices"])
+        self.assertIn("autovacuum_vacuum_scale_factor=0.02", opts["systems"])
+        self.assertFalse(any(o.startswith("fillfactor") for o in opts["systems"]))
+
     def feed(self, msg):
         store.apply_parsed(self.s, parsers.parse_message(msg))
         self.s.commit()

@@ -186,19 +186,24 @@ def upsert_system(session, s, factions, source="eddn", uploader="", software="")
                           .where(System.id64 == id64)).first()
     vals = {k: s[k] for k in _SYSTEM_FIELDS if s.get(k) is not None}
     wrote = False
-    fac_ts = None
+    fac_ts = row.factions_updated_at if row is not None else None
+    late = factions is not None and fac_ts is not None and ts < fac_ts  # late upload: faction snapshot stays
+    # factions_updated_at rides along with the system write (one statement per message instead of two)
+    fac_vals = {"factions_updated_at": ts} if factions is not None and not late else {}
     if row is None:
-        session.execute(insert_for(session)(System.__table__).values(id64=id64, updated_at=ts, source=source, **vals))
+        session.execute(insert_for(session)(System.__table__).values(
+            id64=id64, updated_at=ts, source=source, **vals, **fac_vals))
         wrote = True
-    else:
-        fac_ts = row.factions_updated_at
-        if ts >= row.updated_at:
-            session.execute(update(System.__table__).where(System.id64 == id64).values(updated_at=ts, source=source, **vals))
-            wrote = True
+        fac_vals = {}
+    elif ts >= row.updated_at:
+        session.execute(update(System.__table__).where(System.id64 == id64).values(
+            updated_at=ts, source=source, **vals, **fac_vals))
+        wrote = True
+        fac_vals = {}
 
     if factions is None:
         return wrote
-    if fac_ts is not None and ts < fac_ts:  # late upload: snapshot stays as it is
+    if late:
         n = 0
         if mode == "full":
             _insert_faction_history(session, id64, ts, factions)
@@ -243,7 +248,8 @@ def upsert_system(session, s, factions, source="eddn", uploader="", software="")
              "active_states": [], "pending_states": [], "recovering_states": [], "present": False}
             for name in gone])
     _log_system_event(session, id64, ts, uploader, software, len(factions), len(written) + len(gone))
-    session.execute(update(System.__table__).where(System.id64 == id64).values(factions_updated_at=ts))
+    if fac_vals:  # system fields were not written (message older than the system row): stamp factions alone
+        session.execute(update(System.__table__).where(System.id64 == id64).values(**fac_vals))
     return True
 
 
