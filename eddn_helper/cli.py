@@ -1178,6 +1178,8 @@ def build_parser():
     sp = add("journal-status", cmd_journal_status,
              "Is the database up to date with your journal files? Ingest state, writer access, ingester service")
     sp.add_argument("--journal-dir", help="journal folder (default: $ELITE_JOURNAL_DIR or the Saved Games folder)")
+    from .builds import cli as build_cli
+    build_cli.register(add, jadd)
     return p
 
 

@@ -223,6 +223,36 @@ event with `@handles("EventName")`), `journal/status.py` (`Status.json`), `journ
 migrates at start-up (`deploy.ps1` restarts it because migrations changed), and until then the MCP reports a schema
 mismatch like for any other migration.
 
+## Ship builds: range, power, priorities, what still fits
+
+Mass, jump range and power budget of your **real** fit (the journal's last `Loadout`, including each module's power
+priority group, on/off state and engineering), plus searches over it. Ship and module numbers come from
+[EDCD/coriolis-data](https://github.com/EDCD/coriolis-data) (the data behind coriolis.io and edsy.org), downloaded once into
+`%LOCALAPPDATA%\elite-helper\coriolis-data\catalogue.json` and refreshed after 30 days (`build-data --refresh`; an old copy is
+used when the download fails). Ranges are base-game maths (the Coriolis/game formula; a Guardian booster adds its flat
+bonus); the computed unladen mass and range of your fit are compared with the journal's own `UnladenMass` / `MaxJumpRange`.
+
+| CLI | MCP tool | What it answers |
+|---|---|---|
+| `build-show [--ship-id N] [--swap SLOT=ITEM] [--cargo T]` | `build_current` | mass, unladen/laden jump range and range by cargo load, power retracted vs deployed by priority group, free slots |
+| `build-suggest [--role shield] [--replace SLOT]` | `build_suggest_additions` | what else fits each free slot, with power draw, spare power left, mass and range effect; `--replace` treats a fitted slot as given up |
+| `build-priorities` | `build_priorities` | which modules sit in which priority group, what the game switches off first when overdrawn (retracted/deployed), and misplaced essentials |
+| `build-jump [--keep fsd,booster,fuel_tank] [--objective laden\|unladen]` | `build_optimize_jump` | best drive (every rating, standard and overcharge), Guardian booster in a free slot and fuel tank size, within the power and thruster limits; also the range each heavy module costs |
+| `build-check FILE\|-` | `build_check` | a Coriolis/EDSY Loadout JSON (a build found online) against power, mass, range and priorities; no database needed |
+| `build-max-cargo [--ship STEM] [--pad medium]` | `build_max_cargo` | max cargo and best laden range per ship (the old standalone scripts) |
+| `build-data [--refresh]` | `build_data_status` | age of the cached ship/module data |
+
+`--swap SLOT=ITEM` is a what-if with journal names (`--swap Slot04_Size6=int_fuelscoop_size6_class5`, `--swap Slot03_Size6=` empties
+a slot); `--ship-id` picks any ship you have flown (ShipID from `ships`). Priority group 1 is the highest priority (the
+in-game "1"; the journal stores it 0-based) and the game sheds the highest number first. The role tiers behind the priority
+advice are a community heuristic (in `builds/suggest.py`), not game data. Engineering is read from your journal for fitted
+modules; candidate drives in `build-jump` assume FSD Increased Range grade 5 + Mass Manager at the best roll
+(`--no-engineering` turns that off). Hardpoint weapons are not suggested (only free sizes are listed); test one with
+`build-show --swap`. Coriolis/EDSY links are not decoded: export the Loadout JSON.
+
+Code: `builds/data.py` (catalogue cache), `model.py` (Build from a Loadout), `calc.py` (pure maths), `optimize.py`,
+`suggest.py`, `api.py` (plain dicts for CLI and MCP), `cli.py`. Tests: `tests/test_builds.py` (hand-made catalogue, no network).
+
 ## Time zones
 
 Everything is stored and returned in **UTC** (`timestamptz` on PostgreSQL, UTC on SQLite; `--json` and the MCP tools
@@ -375,7 +405,9 @@ Tools: `data_status`, `system_info`, `system_economy`, `find_systems`, `faction_
 `faction_timeline`, `faction_presence`, `station_market`, `price_history`, `station_traffic`, `system_traffic`,
 `busiest_stations`, `busiest_systems`, `station_activity`, `find_commodity`, `best_trades`, plus the journal tools
 `where_am_i`, `credit_rate`, `journal_search`, `travel_log`, `visited_systems`, `visited_stations`, `play_sessions`, `ledger`,
-`cargo`, `materials`, `ships`, `missions`, `reputation`, `commander_stats`, `carrier_status`, `journal_sync_status`, and the
+`cargo`, `materials`, `ships`, `missions`, `reputation`, `commander_stats`, `carrier_status`, `journal_sync_status`, the ship
+build tools `build_current`, `build_suggest_additions`, `build_priorities`, `build_optimize_jump`, `build_check`,
+`build_max_cargo`, `build_data_status`, and the
 Recce dashboard tools `dashboard_create`, `dashboard_update`, `dashboard_list`, `dashboard_open`, `dashboard_delete`.
 The listener must be running separately (the journal tools only need the database, and `where_am_i` not even that).
 To let the MCP ingest new journal lines itself, add `ELITE_HELPER_INGEST_DATABASE_URL` (a writer URL) to its `env`.

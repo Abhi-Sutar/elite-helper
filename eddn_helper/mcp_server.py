@@ -6,6 +6,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from . import cg_target, database, live, migrate, queries
+from .builds import api as build_api
 from .journal import context as journal_context
 from .journal import files as jfiles
 from .journal import income as journal_income
@@ -32,7 +33,11 @@ mcp = MCPServer(
         "answer may be missing the latest play (see journal_sync_status). "
         "The dashboard_* tools manage local live dashboards: kind \"recce\" (the default, systems with faction states) and "
         "kind \"cg\" (a community-goal supply board: large-pad stations selling a commodity near a delivery system); "
-        "cg_board_target / cg_board_set_target read and move the search location of a cg dashboard."))
+        "cg_board_target / cg_board_set_target read and move the search location of a cg dashboard. "
+        "The build_* tools work on ship fits: build_current (mass, jump range, power by priority group, free slots of your "
+        "real fit from the journal Loadout), build_suggest_additions (what still fits and the power plant can run), "
+        "build_priorities, build_optimize_jump, build_check (paste Coriolis/EDSY Loadout JSON of a build found online) and "
+        "build_max_cargo. Use swaps for what-ifs; ranges are base-game maths from EDCD coriolis-data."))
 
 
 _engine = None
@@ -437,6 +442,98 @@ def materials(category: str | None = None, commander: str | None = None) -> dict
 def ships(modules: bool = True, commander: str | None = None) -> dict:
     """The ship you are in (last Loadout: value, rebuy, cargo, jump range, modules with engineering) and the stored fleet with locations."""
     return _journal(journal_views.ships, commander=commander, modules=modules)
+
+
+_BUILD_HELP = (
+    "Slot names are the journal's (Slot03_Size6, FrameShiftDrive, PowerPlant, ...; see build_current modules). ship_id picks "
+    "a ship you have flown (ShipID from ships); default is the ship you are in. swaps is a what-if {slot: item or ''} using "
+    "journal item names, e.g. {'Slot04_Size6': 'int_shieldgenerator_size6_class5'}; '' empties the slot. "
+    "Ship/module numbers come from EDCD coriolis-data (downloaded and cached on first use).")
+
+
+def _with_help(fn):
+    fn.__doc__ = fn.__doc__.rstrip() + " " + _BUILD_HELP
+    return fn
+
+
+@mcp.tool()
+@_with_help
+def build_current(ship_id: int | None = None, swaps: dict | None = None, cargo: float | None = None,
+                  commander: str | None = None) -> dict:
+    """
+    Analyse a ship as last fitted (journal Loadout): mass, jump range unladen and laden (with a cargo table), cargo/fuel
+    capacity, power budget retracted vs deployed with draw per power priority group (group 1 = highest priority, the
+    game sheds the highest number first), modules with engineering, and free slots. `check` compares against the
+    journal's own UnladenMass/MaxJumpRange. cargo = tons for the laden range (default full hold).
+    """
+    return _journal(build_api.show, commander=commander, ship_id=ship_id, swaps=swaps, cargo=cargo)
+
+
+@mcp.tool()
+@_with_help
+def build_suggest_additions(ship_id: int | None = None, role: str | None = None, replace_slots: list[str] | None = None,
+                            swaps: dict | None = None, commander: str | None = None) -> dict:
+    """
+    What else can be added: for each free internal slot, the best-fitting modules per role (shield, fuel scoop, limpets,
+    cargo, SRV, AFMU, ...) with power draw, spare power left, mass and the jump-range effect, and which the power plant
+    can run. role filters by text. replace_slots lists fitted slots you are willing to give up (treated as empty).
+    Free hardpoints are listed by size only; test a weapon with build_current swaps. Guardian items need unlocks.
+    """
+    return _journal(build_api.suggest_for, commander=commander, ship_id=ship_id, role=role, replace_slots=replace_slots,
+                    swaps=swaps)
+
+
+@mcp.tool()
+@_with_help
+def build_priorities(ship_id: int | None = None, swaps: dict | None = None, commander: str | None = None) -> dict:
+    """
+    Power priorities against usability: every powered module with its priority group and role tier (1 = ship unflyable
+    without it, 4 = convenience), what the game would switch off first when the plant is overdrawn (retracted and
+    deployed), and problems such as the FSD or thrusters sitting in a later group than a convenience module.
+    The tiers are a community heuristic, not game data.
+    """
+    return _journal(build_api.priorities, commander=commander, ship_id=ship_id, swaps=swaps)
+
+
+@mcp.tool()
+@_with_help
+def build_optimize_jump(ship_id: int | None = None, keep: list[str] | None = None, objective: str = "laden",
+                        assume_engineering: bool = True, top: int = 5, commander: str | None = None) -> dict:
+    """
+    Maximise jump range: ranks frame shift drives (every rating, standard and overcharge), a Guardian booster in a free
+    slot and the main fuel tank size, rejecting combinations the power plant or thrusters cannot support; everything else
+    stays as fitted. Also lists which modules cost the most range. keep: any of 'fsd', 'booster', 'fuel_tank' to leave
+    alone. objective 'laden' (full tank and hold) or 'unladen'. Candidate drives assume FSD Increased Range grade 5 +
+    Mass Manager unless assume_engineering is false; your current drive uses its real engineering.
+    """
+    return _journal(build_api.jump, commander=commander, ship_id=ship_id, keep=keep, objective=objective,
+                    assume_engineering=assume_engineering, top=top)
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+def build_check(loadout: str | dict | list, swaps: dict | None = None, cargo: float | None = None) -> dict:
+    """
+    Check a build found online: paste the Loadout JSON from Coriolis ('Export' -> Journal / ED Shipyard format) or EDSY
+    (a journal Loadout event). Returns mass, jump range, power budget and whether power priorities leave the ship usable
+    (no database or journal needed). Coriolis/EDSY links cannot be decoded here; export the JSON instead.
+    """
+    return build_api.check(loadout, swaps, cargo)
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+def build_max_cargo(ship: str | None = None, pad: str | None = None, reserve: int = 2) -> dict:
+    """
+    Max cargo per ship: racks in every internal slot that takes one (two smallest general slots kept for docking
+    computer + supercruise assist) and the frame shift drive giving the best laden jump range. ship: coriolis name
+    (type_8_transport), journal key or ship name; omit for every ship; pad: small, medium or large.
+    """
+    return build_api.max_cargo(ship, pad, reserve)
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+def build_data_status(refresh: bool = False) -> dict:
+    """Age and size of the cached EDCD coriolis-data (ships and modules); refresh=True downloads it again."""
+    return build_api.data_status(refresh)
 
 
 @mcp.tool()
