@@ -1,7 +1,7 @@
 # 🚀 elite-helper
 
 **Your own Elite Dangerous data service:** live market and faction data from EDDN, your journal history, ship build
-maths and live web dashboards, available from a command line and from Claude through MCP.
+maths and live web dashboards, available from a command line and from your choice of AI agent framework through MCP.
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/packaging-uv-DE5FE9?logo=uv&logoColor=white)
