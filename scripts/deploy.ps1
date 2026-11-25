@@ -61,4 +61,4 @@ if ($restart) {
 }
 Write-Host "Deployed. Check the live database with:"
 if ($DbUrl) { Write-Host "  $livePy -m eddn_helper --db `"$DbUrl`" status" } else { Write-Host "  $livePy -m eddn_helper status" }
-Write-Host 'MCP server changes load when Claude restarts or reconnects the elite-helper MCP server.'
+Write-Host 'MCP server changes load when your MCP client restarts or reconnects the elite-helper MCP server.'

@@ -28,7 +28,7 @@ maths and live web dashboards, available from a command line and from your choic
 | 🧾 | **Journal tools** | Where you are, credits per hour, travel, ledger, cargo, materials, ships and missions |
 | 🛠️ | **Ship builds** | Jump range, power priorities, what still fits, jump and cargo optimisers |
 | 🖥️ | **Live dashboards** | A faction state watch (**Recce**) and a community goal **supply board** on `127.0.0.1` |
-| 🤖 | **MCP server** | All of the above as tools for Claude |
+| 🤖 | **MCP server** | All of the above as tools for any MCP-capable AI agent |
 
 ```mermaid
 flowchart LR
@@ -423,7 +423,7 @@ on/off state and engineering), plus searches over it.
 ## 🖥️ Dashboards
 
 A small local server reads the database and serves auto-refreshing pages on `127.0.0.1`. They work in your normal
-browser with no dependency on the Claude app. Each page is one HTML file with no build step and no CDN.
+browser with no dependency on an AI agent. Each page is one HTML file with no build step and no CDN.
 
 | Kind | Shows |
 |---|---|
@@ -625,8 +625,10 @@ scripts\elite-dash reset cg
 
 ## 🤖 MCP server
 
-Add the server to Claude Desktop's `%APPDATA%\Claude\claude_desktop_config.json`, then restart the app. The paths below
-point at a [separate live checkout](#dev-and-live-checkouts); your clone folder works too. The listener runs separately.
+Any MCP client that can start a local (stdio) server can use it. Add the server to your client's MCP configuration,
+then restart the client. The examples use the common `mcpServers` JSON format; your client's file location and format
+may differ. The paths point at a [separate live checkout](#dev-and-live-checkouts); your clone folder works too. The
+listener runs separately.
 
 **SQLite**
 
@@ -665,8 +667,8 @@ point at a [separate live checkout](#dev-and-live-checkouts); your clone folder 
 ```
 
 > [!WARNING]
-> The Claude desktop app keeps its own private copy of what its tools write under `%LOCALAPPDATA%`. To share dashboards
-> with your terminal, set `ELITE_HELPER_RECCE_DIR` to a folder **outside AppData**, both here and as a user environment
+> Some MCP clients installed as packaged (MSIX) Windows apps keep a private copy of what their tools write under
+> `%LOCALAPPDATA%`. To share dashboards with your terminal, set `ELITE_HELPER_RECCE_DIR` to a folder **outside AppData**, both here and as a user environment
 > variable. See [config-templates](config-templates/README.md).
 
 | Group | Tools |
@@ -679,7 +681,7 @@ point at a [separate live checkout](#dev-and-live-checkouts); your clone folder 
 
 `where_am_i` needs no database. Example of a dashboard call:
 `dashboard_create({"name": "industry", "filters": {"economy": "Industrial", "state_in": "pending"}, "radius_ly": 60})`.
-For Claude Code, the CLI also works as is through the shell.
+Agents that can run shell commands can also use the CLI as is.
 
 ## 🏗️ Running it
 
@@ -827,7 +829,7 @@ uv sync --directory ..\elite-helper-live
 | `.\scripts\deploy.ps1` | tests, fast-forward the live checkout to `main`, `uv sync`, and restart the listener task only if needed |
 
 `deploy.ps1` restarts the task only when listener code, migrations or dependencies changed. The MCP server picks up
-changes when Claude restarts or reconnects it. Restart the dashboard server after changing its code.
+changes when your MCP client restarts or reconnects it. Restart the dashboard server after changing its code.
 
 ### Schema and migrations
 
